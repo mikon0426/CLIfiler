@@ -128,7 +128,7 @@ sub get_term_size
 
 sub update_term_size
 {
-	($g_term_width, $g_term_height) = get_term_size();
+	($g_term_height, $g_term_width) = get_term_size();
 }
 
 my $g_total_LF_prev = 0;
