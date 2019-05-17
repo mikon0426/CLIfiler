@@ -10,21 +10,33 @@ use File::Basename;
 my %cmd = (
 	'^[[A' => \&cmd_top,    # ↑
 	'^[[B' => \&cmd_bottom, # ↓
-	'^[[D' => \&cmd_left,   # ←
 	'^[[C' => \&cmd_right,  # →
+	'^[[D' => \&cmd_left,   # ←
 
 	'^[[5~' => \&cmd_large_top,    # pageup
 	'^[[6~' => \&cmd_large_bottom, # pagedown
 
-	' ' => \&mark, # space
+	' '  => \&mark, # space
 
-	'^[[1;2A' => \&set_cursor_search_prev, # Shift+↑
-	'^[[1;2B' => \&set_cursor_search_next, # Shift+↓
+	'^[[1;2A' => \&set_cursor_search_prev, # Shift+Up
+	'^[[1;2B' => \&set_cursor_search_next, # Shift+Down
+	'^[[1;2C' => \&cmd_empty,              # Shift+Right
+	'^[[1;2D' => \&cmd_empty,              # Shift+Left
 
-	'^[OQ'   => \&find_file,          # F2
-	'^[OR'   => \&cmd_grep_recursive, # F3
-	'^[OS'   => \&cmd_grep,           # F4
-	'^[[15~' => \&cmd_update_display, # F5
+	'^[OP'     => \&cmd_empty,          # F1
+	'^[OQ'     => \&cmd_empty,          # F2
+	'^[OR'     => \&cmd_empty,          # F3
+	'^[OS'     => \&cmd_empty,          # F4
+	'^[[15~'   => \&cmd_update_display, # F5
+	'^[[17~'   => \&cmd_empty,          # F6
+	'^[[18~'   => \&cmd_empty,          # F7
+	'^[[19~'   => \&cmd_empty,          # F8
+	'^[[20~'   => \&cmd_grep,           # F9
+	'^[[20;2~' => \&cmd_grep_recursive, # Shift+F9
+	'^[[21~'   => \&find_file,          # F10
+	'^[[23~'   => \&cmd_empty,          # F11
+	'^[[24~'   => \&cmd_empty,          # F12
+	
 
 	'3'  => \&copy_file,       # Ctrl+c
 	'24' => \&move_file,       # Ctrl+x
@@ -61,6 +73,9 @@ my $g_search = "";
 my $g_footer_buf = "";
 my %g_marked = ();
 my $g_script_dir = dirname($0);
+my $g_user = "";
+my $g_uid = 0;
+my $g_gid = 0;
 
 #-------------------------------------------------------------------------------
 # {{{ main
@@ -68,8 +83,10 @@ my $g_script_dir = dirname($0);
 ReadLine::stty_save();
 ReadLine::stty_unable();
 
-$g_pwd = `pwd`;
-chomp( $g_pwd );
+$g_pwd = `pwd`; chomp( $g_pwd );
+$g_user = `whoami`; chomp( $g_user );
+$g_uid = `id -u $g_user`; chomp( $g_uid );
+$g_gid = `id -g $g_user`; chomp( $g_gid );
 load_di();
 init_file_action();
 update_dir( $g_pwd );
@@ -112,6 +129,10 @@ exit(0);
 #-------------------------------------------------------------------------------
 # {{{ cmd
 #-------------------------------------------------------------------------------
+sub cmd_empty
+{
+}
+
 sub cmd_left
 {
 	if ( $mi{virtual} == 1 )
@@ -149,6 +170,10 @@ sub cmd_right
 	}
 	else
 	{
+		if ( get_di_count() == 0 ) {
+			return;
+		}
+
 		my $path = get_selected_path();
 		if ( -d $path ) {
 			move_dir( $path );
@@ -218,7 +243,12 @@ sub update_dir
 
 	my @di_array = ();
 
-	opendir( my $dh, $dir_name ) or die($!);
+	my $ret = opendir( my $dh, $dir_name );
+	if ( !$ret ) {
+		$di{$dir_name} = \@di_array;
+		print( "$!\n" );
+		return;
+	}
 	while( my $item = readdir($dh) )
 	{
 		if ( $item eq '.' || $item eq '..' ) {
@@ -226,17 +256,20 @@ sub update_dir
 		}
 
 		my %dir_info = ();
-		my @fstat = stat "$dir_name/$item";
+		my $full_path = $dir_name eq '/' ? "/$item" : "$dir_name/$item";
+		my @fstat = stat( $full_path );
 
 		$dir_info{name} = $item;
 
-		if ( -l "$dir_name/$item" ) {
+		$dir_info{perm} = is_permission($full_path, $fstat[2], $fstat[4], $fstat[5]);
+
+		if ( -l $full_path ) {
 			$dir_info{type} = 'l';
 		}
-		elsif ( -d "$dir_name/$item" ) {
+		elsif ( -d $full_path ) {
 			$dir_info{type} = 'd';
 		}
-		elsif ( -x "$dir_name/$item" ) {
+		elsif ( -x $full_path ) {
 			$dir_info{type} = 'x';
 		}
 		else {
@@ -282,6 +315,32 @@ sub unixtime2str
 	$mon ++;
 	$year += 1900;
 	return sprintf( "%d/%02d/%02d %02d:%02d:%02d", $year, $mon, $day, $hour, $min, $sec );
+}
+
+sub is_permission
+{
+	my $f_path = shift;
+	my $f_mode = shift;
+	my $f_uid = shift;
+	my $f_gid = shift;
+
+	if ( $g_uid eq $f_uid ) {
+		return 1;
+	}
+
+	if ( $g_gid eq $f_gid ) {
+		return 1;
+	}
+
+#	my $groups = `groups $user`; chomp( $groups );
+#	my @grlist = split( /[ ]/, $groups );
+
+#	for my $group ( @grlist )
+#	{
+#	}
+	
+
+	return 0;
 }
 
 sub move_dir
@@ -353,6 +412,17 @@ sub move_virtual
 
 }
 
+sub mk_abs_path
+{
+	my $rel_path = shift;
+	if ( $g_pwd eq '/' ) {
+		return "/$rel_path";
+	}
+	else {
+		return "$g_pwd/$rel_path";
+	}
+}
+
 # }}}
 
 
@@ -363,6 +433,12 @@ sub move_virtual
 sub set_cursor
 {
 	my $loc = shift;
+
+	if ( get_di_count() == 0 ) {
+		$mi{cur_loc} = 0;
+		$mi{cur_loc_prev} = 0;
+		return;
+	}
 
 	$mi{cur_loc_prev} = $mi{cur_loc};
 	$mi{cur_loc} = $loc;
@@ -480,9 +556,7 @@ sub set_cursor_any
 
 sub get_di_count
 {
-	my $di_arr = $di{$g_pwd};
-	my $elem_count = scalar( @{$di_arr} );
-	return $elem_count;
+	return scalar( @{ $di{$g_pwd} } );
 }
 
 sub get_cursor_max
@@ -534,17 +608,6 @@ sub mark
 	set_cursor( $mi{cur_loc} + 1 );
 	if ( $mi{cur_loc} == get_di_count()-1 ) {
 		$mi{update} = 1;
-	}
-}
-
-sub mk_abs_path
-{
-	my $rel_path = shift;
-	if ( $g_pwd eq '/' ) {
-		return "/$rel_path";
-	}
-	else {
-		return "$g_pwd/$rel_path";
 	}
 }
 
@@ -645,7 +708,8 @@ sub draw_header
 			printf( "\e[Kused: %s/%s ", $df_size[2], $df_size[1] );
 		}
 	}
-	printf( "cursor=[%d/%d]\n", $mi{cur_loc}+1, get_di_count() );
+
+	printf( "cursor=[%d/%d]\n", get_di_count() ? $mi{cur_loc}+1 : 0, get_di_count() );
 
 	printf( "search=[%s]\e[K\n", $g_search );
 }
@@ -727,7 +791,12 @@ sub draw_di
 		$draw_buf .= "    ";
 	}
 
-	if ( $item->{type} eq 'd' )
+	if ( $item->{perm} == 0 )
+	{
+		$name_color = "\e[38;5;240m";
+		$name = $item->{name};
+	}
+	elsif ( $item->{type} eq 'd' )
 	{
 		$name_color = "\e[36m";
 		$name = $item->{name};

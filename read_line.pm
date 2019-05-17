@@ -35,7 +35,6 @@ sub stty_save
 sub stty_unable
 {
 	`stty discard undef`;
-	`stty dsusp undef`;
 	`stty eof undef`;
 	`stty eol undef`;
 	`stty eol2 undef`;
@@ -44,12 +43,24 @@ sub stty_unable
 	`stty kill undef`;
 	`stty lnext undef`;
 	`stty quit undef`;
-	`stty reprint undef`;
 	`stty start undef`;
-	`stty status undef`;
 	`stty stop undef`;
 	`stty susp undef`;
 	`stty werase undef`;
+
+	if ( $g_uname eq "Darwin" )
+	{
+		`stty dsusp undef`;
+		`stty reprint undef`;
+		`stty status undef`;
+	}
+
+	if ( $g_uname eq "Linux" )
+	{
+		`stty swtch undef`;
+		`stty rprnt undef`;
+	}
+
 }
 
 sub stty_load
