@@ -75,7 +75,7 @@ my %g_marked = ();
 my $g_script_dir = dirname($0);
 my $g_user = "";
 my $g_uid = 0;
-my $g_gid = 0;
+my @g_gid = ();
 
 #-------------------------------------------------------------------------------
 # {{{ main
@@ -86,9 +86,9 @@ ReadLine::stty_unable();
 $g_pwd = `pwd`; chomp( $g_pwd );
 $g_user = `whoami`; chomp( $g_user );
 $g_uid = `id -u $g_user`; chomp( $g_uid );
-$g_gid = `id -g $g_user`; chomp( $g_gid );
 load_di();
 init_file_action();
+init_my_group();
 update_dir( $g_pwd );
 cls();
 
@@ -324,23 +324,30 @@ sub is_permission
 	my $f_uid = shift;
 	my $f_gid = shift;
 
-	if ( $g_uid eq $f_uid ) {
+	if ( $g_uid == $f_uid ) {
 		return 1;
 	}
 
-	if ( $g_gid eq $f_gid ) {
+	foreach my $gid ( @g_gid )
+	{
+		if ( $gid == $f_gid ) {
+			return 1;
+		}
+	}
+
+	if ( $f_mode & 0x04 ) {
 		return 1;
 	}
 
-#	my $groups = `groups $user`; chomp( $groups );
-#	my @grlist = split( /[ ]/, $groups );
-
-#	for my $group ( @grlist )
-#	{
-#	}
 	
 
 	return 0;
+}
+
+sub init_my_group
+{
+	my $groups = `id -G $g_user`; chomp( $groups );
+	@g_gid = split( /[ ]/, $groups );
 }
 
 sub move_dir
@@ -652,10 +659,12 @@ sub get_marked_count
 sub cls
 {
 	printf( "\e[2J\e[1;1H" );
+	printf("\e[>5h"	);
 }
 
 sub clm
 {
+
 	printf( "\e[s" );
 
 	for( my $i=$g_menu_start_row; $i<$mi{term_height_max}; $i++ )
