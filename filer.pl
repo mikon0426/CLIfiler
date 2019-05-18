@@ -907,6 +907,7 @@ sub save_di
 	print( $fh "$mi{cur_loc_offset}\n" );
 
 	close( $fh );
+
 }
 
 sub load_di
@@ -923,6 +924,7 @@ sub load_di
 	$path = <$fh>;           chomp($path);
 	$cur_loc = <$fh>;        chomp($cur_loc);
 	$cur_loc_offset = <$fh>; chomp($cur_loc_offset);
+	close( $fh );
 
 	if ( $path eq $g_pwd ) {
 		$mi{cur_loc} = int($cur_loc);
@@ -1150,7 +1152,7 @@ sub mk_delete_unique_name
 	my ($sec, $min, $hour, $day, $mon, $year) = localtime($unixtime);
 	$mon ++;
 	$year += 1900;
-	return sprintf( "filer_deleted_%d%02d%02d%02d%02d%02d_", $year, $mon, $day, $hour, $min, $sec );
+	return sprintf( "filer_deleted_%d%02d%02d%02d%02d%02d", $year, $mon, $day, $hour, $min, $sec );
 }
 
 sub delete_file
@@ -1165,7 +1167,7 @@ sub delete_file
 			return;
 		}
 
-		my $del_name = mk_delete_unique_name() . $item->{name};
+		my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $item->{name} );
 		my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($item->{name}), $del_name );
 		system( $cmd );
 
@@ -1189,7 +1191,7 @@ sub delete_file
 
 		foreach my $targ ( @list )
 		{
-			my $del_name = mk_delete_unique_name() . $targ;
+			my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $targ );
 			my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($targ), $del_name );
 			system( $cmd );
 		}
