@@ -90,6 +90,7 @@ load_di();
 init_file_action();
 init_my_group();
 update_dir( $g_pwd );
+printf("\e[?25l");
 cls();
 
 while( 1 )
@@ -118,6 +119,7 @@ while( 1 )
 
 save_di();
 ReadLine::stty_load();
+printf("\e[?25h");
 exit(0);
 # }}}
 
@@ -659,7 +661,6 @@ sub get_marked_count
 sub cls
 {
 	printf( "\e[2J\e[1;1H" );
-	printf("\e[>5h"	);
 }
 
 sub clm
