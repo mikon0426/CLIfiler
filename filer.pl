@@ -182,7 +182,7 @@ sub cmd_right
 		}
 		else {
 			ReadLine::stty_load();
-			system( "/usr/bin/vim $path" );
+			system( "/usr/bin/vim -u $g_script_dir/.vimrc $path" );
 			ReadLine::stty_unable();
 		}
 	}
@@ -1268,6 +1268,7 @@ sub find_file
 		$di_info{name} = $item_name;
 		$di_info{type} = 'f';
 		$di_info{jump} = $line;
+		$di_info{perm} = 1;
 		$di_info{real_path} = $line;
 		push( @di_arr, \%di_info );
 	}
@@ -1329,7 +1330,8 @@ sub grep_file
 		my %di_info = ();
 		$di_info{name} = sprintf( "%-20s %s", $fname, $hit );
 		$di_info{type} = 'f';
-		$di_info{exec} = "vim -c $lnumber '$path'";
+		$di_info{exec} = "vim -u $g_script_dir/.vimrc -c $lnumber '$path'";
+		$di_info{perm} = 1;
 		$di_info{real_path} = $path;
 		push( @di_arr, \%di_info );
 	}
