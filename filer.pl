@@ -1038,7 +1038,7 @@ sub copy_file
 		return;
 	}
 
-	save_file_action( 'cp' );
+	save_file_action( 'cp -r' );
 
 	my $msg = sprintf( "Copy file(%d items)", $marked_count );
 	draw_footer_area( $msg );
@@ -1095,11 +1095,22 @@ sub paste_file
 	if ( !defined($ans) ) {
 		return;
 	}
+	print( "\n" );
 
 	foreach my $src ( @path )
 	{
 		my $cmd = sprintf( "$action '$src' '%s'", mk_abs_path('') );
-		system( $cmd );
+		my $ret = system( $cmd );
+		$ret >>= 8;
+		if ( $ret != 0 ) {
+			ReadLine::wait_key();
+			last;
+		}
+
+		if ( $action eq 'mv' ) {
+			my $srcdir = dirname( $src );
+			update_dir($srcdir);
+		}
 	}
 
 	delete_file_action();
@@ -1121,9 +1132,14 @@ sub rename_file
 	if ( -e mk_abs_path($ans) ) {
 		return;
 	}
+	print( "\n" );
 
 	my $cmd = sprintf( "mv '%s' '%s'", mk_abs_path($item->{name}), mk_abs_path($ans) );
-	system( $cmd );
+	my $ret = system( $cmd );
+	$ret >>= 8;
+	if ( $ret != 0 ) {
+		ReadLine::wait_key();
+	}
 
 	cmd_update_display();
 }
@@ -1140,9 +1156,14 @@ sub duplicate_file
 	if ( $ans eq $item->{name} ) {
 		return;
 	}
+	print( "\n" );
 
-	my $cmd = sprintf( "cp '%s' '%s'", mk_abs_path($item->{name}), mk_abs_path($ans) );
-	system( $cmd );
+	my $cmd = sprintf( "cp -r '%s' '%s'", mk_abs_path($item->{name}), mk_abs_path($ans) );
+	my $ret = system( $cmd );
+	$ret >>= 8;
+	if ( $ret != 0 ) {
+		ReadLine::wait_key();
+	}
 
 	cmd_update_display();
 }
@@ -1167,10 +1188,15 @@ sub delete_file
 		if ( !defined($ans) ) {
 			return;
 		}
+		print( "\n" );
 
 		my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $item->{name} );
 		my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($item->{name}), $del_name );
-		system( $cmd );
+		my $ret = system( $cmd );
+		$ret >>= 8;
+		if ( $ret != 0 ) {
+			ReadLine::wait_key();
+		}
 
 		cmd_update_display();
 	}
@@ -1189,12 +1215,18 @@ sub delete_file
 		if ( !defined($ans) ) {
 			return;
 		}
+		print( "\n" );
 
 		foreach my $targ ( @list )
 		{
 			my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $targ );
 			my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($targ), $del_name );
-			system( $cmd );
+			my $ret = system( $cmd );
+			$ret >>= 8;
+			if ( $ret != 0 ) {
+				ReadLine::wait_key();
+				last;
+			}
 		}
 
 		my $msg = sprintf( "Delete files(%d items)", $marked_count );
@@ -1215,9 +1247,14 @@ sub create_dir
 	if ( -e mk_abs_path($ans) ) {
 		return;
 	}
+	print( "\n" );
 
 	my $cmd = sprintf( "mkdir '%s'", mk_abs_path($ans) );
-	system( $cmd );
+	my $ret = system( $cmd );
+	$ret >>= 8;
+	if ( $ret != 0 ) {
+		ReadLine::wait_key();
+	}
 
 	cmd_update_display();
 }
@@ -1230,7 +1267,7 @@ sub calc_total_size
 sub open_binary
 {
 	my $path = get_selected_path();
-	system( "vim -b '$path'" );
+	system( "vim -b -u $g_script_dir/.vimrc '$path'" );
 }
 
 sub find_file
