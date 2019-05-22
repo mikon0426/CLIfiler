@@ -23,19 +23,19 @@ my %cmd = (
 	'^[[1;2C' => \&cmd_empty,              # Shift+Right
 	'^[[1;2D' => \&cmd_empty,              # Shift+Left
 
-	'^[OP'     => \&cmd_empty,          # F1
-	'^[OQ'     => \&cmd_empty,          # F2
-	'^[OR'     => \&cmd_empty,          # F3
-	'^[OS'     => \&cmd_empty,          # F4
-	'^[[15~'   => \&cmd_update_display, # F5
-	'^[[17~'   => \&cmd_empty,          # F6
-	'^[[18~'   => \&cmd_empty,          # F7
-	'^[[19~'   => \&cmd_empty,          # F8
-	'^[[20~'   => \&cmd_grep,           # F9
-	'^[[20;2~' => \&cmd_grep_recursive, # Shift+F9
-	'^[[21~'   => \&find_file,          # F10
-	'^[[23~'   => \&cmd_empty,          # F11
-	'^[[24~'   => \&cmd_empty,          # F12
+	'^[OP'     => \&cmd_empty,            # F1
+	'^[OQ'     => \&cmd_empty,            # F2
+	'^[OR'     => \&cmd_empty,            # F3
+	'^[OS'     => \&cmd_empty,            # F4
+	'^[[15~'   => \&cmd_update_display,   # F5
+	'^[[17~'   => \&disp_copy_cut_target, # F6
+	'^[[18~'   => \&cmd_empty,            # F7
+	'^[[19~'   => \&cmd_empty,            # F8
+	'^[[20~'   => \&cmd_grep,             # F9
+	'^[[20;2~' => \&cmd_grep_recursive,   # Shift+F9
+	'^[[21~'   => \&find_file,            # F10
+	'^[[23~'   => \&cmd_empty,            # F11
+	'^[[24~'   => \&cmd_empty,            # F12
 	
 
 	'3'  => \&copy_file,       # Ctrl+c
@@ -87,10 +87,10 @@ $g_pwd = `pwd`; chomp( $g_pwd );
 $g_user = `whoami`; chomp( $g_user );
 $g_uid = `id -u $g_user`; chomp( $g_uid );
 load_di();
-init_file_action();
+#init_file_action();
 init_my_group();
 update_dir( $g_pwd );
-printf("\e[?25l");
+set_visible_cursor(0);
 cls();
 
 while( 1 )
@@ -119,7 +119,7 @@ while( 1 )
 
 save_di();
 ReadLine::stty_load();
-printf("\e[?25h");
+set_visible_cursor(1);
 exit(0);
 # }}}
 
@@ -600,6 +600,25 @@ sub get_search_string
 	return $search;
 }
 
+sub set_visible_cursor
+{
+	my $disp = shift;
+
+	if ( $disp == 1 ) {
+		printf("\e[?25h");
+	}
+	else {
+		printf("\e[?25l");
+	}
+}
+
+# }}}
+
+
+
+#-------------------------------------------------------------------------------
+# {{{ mark
+#-------------------------------------------------------------------------------
 sub mark
 {
 	my $item = get_selected_item();
@@ -829,6 +848,7 @@ sub draw_di
 	$draw_buf .= $name_color;
 
 
+	$name =~ s/\t/ /g;
 	if ( length($name) > ($mi{term_width_max}-4) )
 	{
 		$name = substr( $name, 0, $mi{term_width_max}-4 );
@@ -865,18 +885,23 @@ sub draw_di
 
 	if ( $mi{virtual} == 0 )
 	{
-		if ( $item->{type} eq 'd' )
+		if ( $mi{term_width_max} >= 58 )
 		{
-			$draw_buf .= "\e[10000D\e[40C ┃";
-			$draw_buf .= sprintf( "%17s", "<DIR>" );
-		}
-		else
-		{
-			$draw_buf .= "\e[10000D\e[40C ┃";
-			$draw_buf .= sprintf( "%17s", $item->{size} );
+			if ( $item->{type} eq 'd' )
+			{
+				$draw_buf .= "\e[10000D\e[40C┃";
+				$draw_buf .= sprintf( "%17s", "<DIR>" );
+			}
+			else
+			{
+				$draw_buf .= "\e[10000D\e[40C┃";
+				$draw_buf .= sprintf( "%17s", $item->{size} );
+			}
 		}
 
-		$draw_buf .= " ┃ $item->{atime} ┃ $item->{mtime}";
+		if ( $mi{term_width_max} >= 98 ) {
+			$draw_buf .= "┃$item->{atime}┃$item->{mtime}";
+		}
 	}
 
 
@@ -1117,12 +1142,44 @@ sub paste_file
 	cmd_update_display();
 }
 
+sub disp_copy_cut_target
+{
+	my ($action, @path) = load_file_action();
+	if ( $action eq "" ) {
+		draw_footer_area( "The file copy/cut is not operated." );
+		return;
+	}
+
+	printf( "\n" );
+	my $ope;
+	if    ( $action =~ /mv/o ) { $ope = 'Cut'; }
+	elsif ( $action =~ /cp/o ) { $ope = 'Copy'; }
+	printf( "operation=[%s]\n", $ope );
+	printf( "target:\n" );
+	foreach my $p ( @path )
+	{
+		printf( "$p\n" );
+	}
+
+	$mi{update} = 1;
+	my $ans = ReadLine::read_line( "May I initialize these file copy/cut? (Enter:OK, Escape:Cancel)" );
+	if ( !defined($ans) ) {
+		return;
+	}
+
+	delete_file_action();
+	draw_footer_area( "Copy/cut is initialized." );
+	
+}
+
 sub rename_file
 {
 	my $item = get_selected_item();
 
 	$mi{update} = 1;
+	set_visible_cursor(1);
 	my $ans = ReadLine::read_line( "new name=", $item->{name} );
+	set_visible_cursor(0);
 	if ( !defined($ans) ) {
 		return;
 	}
@@ -1149,7 +1206,9 @@ sub duplicate_file
 	my $item = get_selected_item();
 
 	$mi{update} = 1;
+	set_visible_cursor(1);
 	my $ans = ReadLine::read_line( "dup name=", $item->{name} );
+	set_visible_cursor(0);
 	if ( !defined($ans) ) {
 		return;
 	}
@@ -1240,7 +1299,9 @@ sub delete_file
 sub create_dir
 {
 	$mi{update} = 1;
+	set_visible_cursor(1);
 	my $ans = ReadLine::read_line( "new dir name=" );
+	set_visible_cursor(0);
 	if ( !defined($ans) ) {
 		return;
 	}
@@ -1272,7 +1333,9 @@ sub open_binary
 
 sub find_file
 {
+	set_visible_cursor(1);
 	my $key_str = ReadLine::read_line("find file str=");
+	set_visible_cursor(0);
 	if ( $key_str eq "" ) {
 		return;
 	}
@@ -1321,12 +1384,14 @@ sub grep_file
 	my $is_recursive = shift;
 	my $key_str = "";
 
+	set_visible_cursor(1);
 	if ( $is_recursive ) {
 		$key_str = ReadLine::read_line("grep str(recursive)=");
 	}
 	else {
 		$key_str = ReadLine::read_line("grep str(only current)=");
 	}
+	set_visible_cursor(0);
 	if ( $key_str eq "" ) {
 		return;
 	}
