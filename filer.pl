@@ -370,6 +370,7 @@ sub move_dir
 		$mi{cur_loc_offset} = $mi_bk{$g_pwd}->{cur_loc_offset};
 		$mi{update} = 1;
 		mark_delete();
+		$g_search = "";
 		return 1;
 	}
 	else
@@ -387,6 +388,7 @@ sub move_dir
 
 		$g_pwd = $new_dir;
 		update_dir( $g_pwd );
+		$g_search = "";
 		return 1;
 	}
 
