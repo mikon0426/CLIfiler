@@ -46,7 +46,7 @@ my %cmd = (
 	'23' => \&duplicate_file,  # Ctrl+w
 	'4'  => \&delete_file,     # Ctrl+d
 	'11' => \&create_dir,      # Ctrl+k
-	'9'  => \&calc_total_size, # Ctrl+i
+	'21' => \&calc_total_size, # Ctrl+u
 	'2'  => \&open_binary,     # Ctrl+b
 
 );
@@ -278,8 +278,13 @@ sub update_dir
 			$dir_info{type} = 'f';
 		}
 
-		$dir_info{size} = $fstat[7];
-		1 while $dir_info{size} =~ s/(.*\d)(\d\d\d)/$1,$2/;
+		if ( $dir_info{type} eq 'd' ) {
+			$dir_info{size} = '<DIR>';
+		}
+		else {
+			$dir_info{size} = $fstat[7];
+			1 while $dir_info{size} =~ s/(.*\d)(\d\d\d)/$1,$2/;
+		}
 
 		$dir_info{atime} = unixtime2str( $fstat[8] );
 		$dir_info{mtime} = unixtime2str( $fstat[9] );
@@ -672,6 +677,21 @@ sub get_marked_count
 	return $count;
 }
 
+sub get_marked_item
+{
+	my $marked_name = shift;
+
+	my $di_arr = $di{$g_pwd};
+	for( my $i=0; $i<get_di_count(); $i++ )
+	{
+		if ( $di_arr->[$i]->{name} eq $marked_name ) {
+			return $di_arr->[$i];
+		}
+	}
+
+	return undef;
+}
+
 # }}}
 
 
@@ -872,7 +892,7 @@ sub draw_di
 		my $search = get_search_string();
 		if ( $name =~ /$search/ ) {
 			$draw_buf .= $`;
-			$draw_buf .= "\e[48;5;52m$&\e[m$name_color$bg_color";
+			$draw_buf .= "\e[48;5;94m$&\e[m$name_color$bg_color";
 			$draw_buf .= $';
 		}
 		else {
@@ -889,16 +909,8 @@ sub draw_di
 	{
 		if ( $mi{term_width_max} >= 58 )
 		{
-			if ( $item->{type} eq 'd' )
-			{
-				$draw_buf .= "\e[10000D\e[40C┃";
-				$draw_buf .= sprintf( "%17s", "<DIR>" );
-			}
-			else
-			{
-				$draw_buf .= "\e[10000D\e[40C┃";
-				$draw_buf .= sprintf( "%17s", $item->{size} );
-			}
+			$draw_buf .= "\e[10000D\e[40C┃";
+			$draw_buf .= sprintf( "%17s", $item->{size} );
 		}
 
 		if ( $mi{term_width_max} >= 98 ) {
@@ -1324,7 +1336,46 @@ sub create_dir
 
 sub calc_total_size
 {
+	my $marked_count = get_marked_count();
 
+	if ( $marked_count == 0 )
+	{
+		my $path = get_selected_path();
+		my $cmd = sprintf( "du -bs '$path'" );
+		my $out = `$cmd`;
+		if ( $out eq '' ) {
+			return;
+		}
+
+		my @results = split( /\t/, $out );
+
+#		draw_footer_area($results[0]);
+		1 while $results[0] =~ s/(.*\d)(\d\d\d)/$1,$2/;
+
+		my $item = get_selected_item();
+		$item->{size} = $results[0];
+		$mi{update} = 1;
+	}
+	else
+	{
+		my @list = get_marked();
+
+		for my $name ( @list )
+		{
+			my $path = mk_abs_path( $name );
+			my $cmd = sprintf( "du -bs '$path'" );
+			my $out = `$cmd`;
+			if ( $out eq '' ) {
+				return;
+			}
+			my @results = split( /\t/, $out );
+			1 while $results[0] =~ s/(.*\d)(\d\d\d)/$1,$2/;
+
+			my $item = get_marked_item( $name );
+			$item->{size} = $results[0];
+		}
+		$mi{update} = 1;
+	}
 }
 
 sub open_binary
