@@ -266,7 +266,16 @@ sub update_dir
 		$dir_info{perm} = is_permission($full_path, $fstat[2], $fstat[4], $fstat[5]);
 
 		if ( -l $full_path ) {
-			$dir_info{type} = 'l';
+			$dir_info{link} = readlink( $full_path );
+			if ( -d $full_path ) {
+				$dir_info{type} = 'd';
+			}
+			elsif ( -x $full_path ) {
+				$dir_info{type} = 'x';
+			}
+			else {
+				$dir_info{type} = 'f';
+			}
 		}
 		elsif ( -d $full_path ) {
 			$dir_info{type} = 'd';
@@ -376,6 +385,7 @@ sub move_dir
 		$mi{update} = 1;
 		mark_delete();
 		$g_search = "";
+		#`cd $g_pwd`;
 		return 1;
 	}
 	else
@@ -394,6 +404,7 @@ sub move_dir
 		$g_pwd = $new_dir;
 		update_dir( $g_pwd );
 		$g_search = "";
+		#`cd $g_pwd`;
 		return 1;
 	}
 
@@ -842,10 +853,16 @@ sub draw_di
 		$draw_buf .= "    ";
 	}
 
+
 	if ( $item->{perm} == 0 )
 	{
 		$name_color = "\e[38;5;240m";
 		$name = $item->{name};
+	}
+	elsif( defined($item->{link}) )
+	{
+		$name_color = "\e[35m";
+		$name = "$item->{name} -> $item->{link}";
 	}
 	elsif ( $item->{type} eq 'd' )
 	{
@@ -857,12 +874,7 @@ sub draw_di
 		$name_color = "\e[32m";
 		$name = $item->{name};
 	}
-	elsif( $item->{type} eq 'l' )
-	{
-		$name_color = "\e[35m";
-		my $target = readlink( "$g_pwd/$item->{name}" );
-		$name = "$item->{name} -> $target";
-	}
+
 	else
 	{
 		$name = $item->{name};
