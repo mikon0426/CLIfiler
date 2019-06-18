@@ -23,7 +23,7 @@ my %cmd = (
 	'^[[1;2C' => \&cmd_empty,              # Shift+Right
 	'^[[1;2D' => \&cmd_empty,              # Shift+Left
 
-	'^[OP'     => \&cmd_empty,            # F1
+	'^[OP'     => \&move_fvr,             # F1
 	'^[OQ'     => \&cmd_empty,            # F2
 	'^[OR'     => \&cmd_empty,            # F3
 	'^[OS'     => \&cmd_empty,            # F4
@@ -156,11 +156,24 @@ sub cmd_right
 		if ( defined($item->{jump}) )
 		{
 			my $path = $item->{jump};
-			my $dir = dirname( $path );
-			my $base = basename( $path );
-			if ( -d $dir ) {
-				move_dir( $dir );
-				set_cursor_any( $base );
+			my $type = $item->{type};
+			if ( $type eq 'unknown' ) {
+				return;
+			}
+
+			if ( -f $path )
+			{
+				my $dir = dirname( $path );
+				my $base = basename( $path );
+				if ( -d $dir ) {
+					move_dir( $dir );
+					set_cursor_any( $base );
+					$mi{virtual} = 0;
+				}
+			}
+			elsif ( -d $path )
+			{
+				move_dir( $path );
 				$mi{virtual} = 0;
 			}
 		}
@@ -428,21 +441,41 @@ sub move_virtual
 {
 	my $new_dir = shift;
 
-	$mi{virtual} = 1;
-	$mi{virtual_return} = $g_pwd;
-	$g_pwd = $new_dir;
+	if ( $mi{virtual} == 0 ) {
+		my %menu_info;
+		$menu_info{cur_loc}        = $mi{cur_loc};
+		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
+		$mi_bk{$g_pwd} = \%menu_info;
 
+		$mi{virtual} = 1;
+		$mi{virtual_return} = $g_pwd;
+	}
+	else {
+	}
+
+	$g_pwd = $new_dir;
 	$mi{cur_loc} = 0;
 	$mi{cur_loc_offset} = 0;
 	$mi{cur_loc_prev} = 0;
 	$mi{update} = 1;
 
 }
-
+sub get_real_pwd
+{
+	if ( $mi{virtual} == 1 )
+	{
+		return $mi{virtual_return};
+	}
+	else
+	{
+		return $g_pwd;
+	}
+}
 sub mk_abs_path
 {
 	my $rel_path = shift;
-	if ( $g_pwd eq '/' ) {
+	my $pwd = get_real_pwd();
+	if ( $pwd eq '/' ) {
 		return "/$rel_path";
 	}
 	else {
@@ -859,7 +892,7 @@ sub draw_di
 		$name_color = "\e[38;5;240m";
 		$name = $item->{name};
 	}
-	elsif( defined($item->{link}) )
+	elsif ( defined($item->{link}) )
 	{
 		$name_color = "\e[35m";
 		$name = "$item->{name} -> $item->{link}";
@@ -874,7 +907,11 @@ sub draw_di
 		$name_color = "\e[32m";
 		$name = $item->{name};
 	}
-
+	elsif ( $item->{type} eq 'unknown' )
+	{
+		$name_color = "\e[9;31m";
+		$name = $item->{name};
+	}
 	else
 	{
 		$name = $item->{name};
@@ -1073,6 +1110,27 @@ sub load_file_action
 sub delete_file_action
 {
 	unlink( "$g_script_dir/.fileraction" );
+}
+
+sub load_fvr
+{
+	my $fname = "$g_script_dir/.filerfavorite";
+	my $ret = open( my $fh, '<', $fname );
+	if ( !$ret ) {
+		return ();
+	}
+
+	my @path = ();
+	while( my $line = <$fh> )
+	{
+		chomp($line);
+		if ( $line eq '' ) {
+			next;
+		}
+		push( @path, $line );
+	}
+
+	return @path;
 }
 
 # }}}
@@ -1408,8 +1466,9 @@ sub find_file
 
 
 	my $vdir = "<find_list>";
+	my $pwd = get_real_pwd();
 	my @di_arr = ();
-	my $cmd = "find $g_pwd -name '*$key_str*' 2>/dev/null";
+	my $cmd = "find $pwd -name '*$key_str*' 2>/dev/null";
 
 	
 	ReadLine::stty_load();
@@ -1464,13 +1523,14 @@ sub grep_file
 
 
 	my $vdir = "<grep_list>";
+	my $pwd = get_real_pwd();
 	my @di_arr = ();
 	my $cmd = "";
 	if ( $is_recursive ) {
-		$cmd = "grep --color=never -rnI '$key_str' $g_pwd";
+		$cmd = "grep --color=never -rnI '$key_str' $pwd";
 	}
 	else {
-		$cmd = "grep --color=never -nI '$key_str' $g_pwd/*";
+		$cmd = "grep --color=never -nI '$key_str' $pwd/*";
 	}
 
 	ReadLine::stty_load();
@@ -1509,7 +1569,49 @@ sub grep_file
 	move_virtual( $vdir );
 }
 
+sub move_fvr
+{
+	my @favorites = load_fvr();
+	if ( scalar(@favorites) == 0 ) {
+		return;
+	}
 
+	my $vdir = "<favorite_list>";
+	my @di_arr = ();
+	foreach my $fvr ( @favorites )
+	{
+		my %di_info = ();
+		my $conv_name = "";
+		eval( "\$conv_name = $fvr;" );
+		my $name = $conv_name eq "" ? $fvr : $conv_name;
+
+		$di_info{name} = $name;
+		if ( -d $name ) {
+			$di_info{type} = 'd';
+			$di_info{jump} = $name;
+		}
+		elsif ( -x $name ) {
+			$di_info{type} = 'x';
+			$di_info{jump} = $name;
+		}
+		elsif ( -f $name ) {
+			$di_info{type} = 'f';
+			$di_info{jump} = $name;
+		}
+		else {
+			$di_info{type} = 'unknown';
+			$di_info{jump} = "";
+		}
+
+		$di_info{perm} = 1;
+		
+		push( @di_arr, \%di_info );
+	}
+
+	$di{$vdir} = \@di_arr;
+	move_virtual( $vdir );
+
+}
 
 # }}}
 
