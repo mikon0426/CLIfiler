@@ -26,7 +26,8 @@ my %cmd = (
 	'^[OP'     => \&move_fvr,             # F1
 	'^[OQ'     => \&cmd_empty,            # F2
 	'^[OR'     => \&cmd_empty,            # F3
-	'^[OS'     => \&cmd_empty,            # F4
+	'^[OS'     => \&exec_diff,            # F4
+	'^[[1;2S'  => \&init_diff_target,     # Shift+F4
 	'^[[15~'   => \&cmd_update_display,   # F5
 	'^[[17~'   => \&disp_copy_cut_target, # F6
 	'^[[18~'   => \&cmd_empty,            # F7
@@ -48,6 +49,7 @@ my %cmd = (
 	'11' => \&create_dir,      # Ctrl+k
 	'21' => \&calc_total_size, # Ctrl+u
 	'2'  => \&open_binary,     # Ctrl+b
+	'20' => \&target_diff_source # Ctrl+t
 
 );
 
@@ -195,7 +197,13 @@ sub cmd_right
 		}
 		else {
 			ReadLine::stty_load();
-			system( "/usr/bin/vim -u $g_script_dir/.vimrc $path" );
+			my $path_vim = `which vim`;
+			if ( $path_vim eq "" ) {
+				system( "nano $path" );
+			}
+			else {
+				system( "vim -u $g_script_dir/.vimrc $path" );
+			}
 			ReadLine::stty_unable();
 		}
 	}
@@ -1130,7 +1138,70 @@ sub load_fvr
 		push( @path, $line );
 	}
 
+	close( $fh );
+
 	return @path;
+}
+
+sub save_diff_target
+{
+	my @path_list = get_marked();
+	my $write_count = 0;
+
+	my $fname = "$g_script_dir/.filerdifftarget";
+	my $ret = open( my $fh, '>>', $fname );
+	if ( !$ret ) {
+		return 0;
+	}
+
+	foreach my $path ( @path_list )
+	{
+		my $path_full;
+
+		if ( $g_pwd eq '/' ) {
+			$path_full = "/$path";
+		}
+		else {
+			$path_full = "$g_pwd/$path";
+		}
+
+		if ( -f $path_full ) {
+			print( $fh "$path_full\n" );
+			$write_count ++;
+		}
+	}
+
+	close( $fh );
+
+	return $write_count;
+}
+
+sub load_diff_target
+{
+	my $fname = "$g_script_dir/.filerdifftarget";
+	my $ret = open( my $fh, '<', $fname );
+	if ( !$ret ) {
+		return ();
+	}
+
+	my @path = ();
+	while( my $line = <$fh> )
+	{
+		chomp($line);
+		if ( $line eq '' ) {
+			next;
+		}
+		push( @path, $line );
+	}
+
+	close( $fh );
+
+	return @path;
+}
+
+sub delete_diff_target
+{
+	unlink( "$g_script_dir/.filerdifftarget" );
 }
 
 # }}}
@@ -1610,6 +1681,51 @@ sub move_fvr
 
 	$di{$vdir} = \@di_arr;
 	move_virtual( $vdir );
+
+}
+
+sub target_diff_source
+{
+	my $marked_count = get_marked_count();
+	if ( $marked_count == 0 ) {
+		return;
+	}
+
+	my $save_count = save_diff_target();
+	if ( $save_count == 0 ) {
+		return;
+	}
+
+	my $msg = sprintf( "The Compare file is entried.(%d files) F4 for exec diff.", $save_count );
+	draw_footer_area( $msg );
+	mark_delete();
+
+}
+
+sub init_diff_target
+{
+	delete_diff_target();
+	my $msg = sprintf( "Initialized diff target." );
+	draw_footer_area( $msg );
+
+}
+
+sub exec_diff
+{
+	my @diff_target = load_diff_target();
+	if ( scalar(@diff_target) < 2 ) {
+		return;
+	}
+
+	my $cmd = "vimdiff";
+	foreach my $dt ( @diff_target )
+	{
+		$cmd .= " $dt";
+	}
+	system( $cmd );
+
+	delete_diff_target();
+	cmd_update_display();
 
 }
 
