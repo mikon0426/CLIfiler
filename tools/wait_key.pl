@@ -14,7 +14,7 @@ stty_unable();
 while(1)
 {
 	my $key = wait_key();
-	printf( "key=[%s]\n", $key );
+	printf( "key(str)=[%s] key(int)=[%d]\n", $key, $key );
 	if ( $key eq '^[' ) {
 		last;
 	}
@@ -99,8 +99,14 @@ sub wait_key
 	elsif ( $c_sz eq '127' ) {
 		$ret = '^[DEL';
 	}
+	elsif ( $c_sz eq '10' ) {
+		$ret = "\n";
+	}
+	elsif ( $c_sz eq '9' ) {
+		$ret = "\t";
+	}
 	elsif ( int($c_sz) < 27 ) {
-		$ret = $c_sz;
+		$ret = "d$c_sz";
 	}
 	else {
 		$ret = $input;

@@ -39,17 +39,17 @@ my %cmd = (
 	'^[[24~'   => \&cmd_empty,            # F12
 	
 
-	'3'  => \&copy_file,       # Ctrl+c
-	'24' => \&move_file,       # Ctrl+x
-	'1'  => \&add_copy,        # Ctrl+a
-	'22' => \&paste_file,      # Ctrl+v
-	'18' => \&rename_file,     # Ctrl+r
-	'23' => \&duplicate_file,  # Ctrl+w
-	'4'  => \&delete_file,     # Ctrl+d
-	'11' => \&create_dir,      # Ctrl+k
-	'21' => \&calc_total_size, # Ctrl+u
-	'2'  => \&open_binary,     # Ctrl+b
-	'20' => \&target_diff_source # Ctrl+t
+	'd3'  => \&copy_file,       # Ctrl+c
+	'd24' => \&move_file,       # Ctrl+x
+	'd1'  => \&add_copy,        # Ctrl+a
+	'd22' => \&paste_file,      # Ctrl+v
+	'd18' => \&rename_file,     # Ctrl+r
+	'd23' => \&duplicate_file,  # Ctrl+w
+	'd4'  => \&delete_file,     # Ctrl+d
+	'd11' => \&create_dir,      # Ctrl+k
+	'd21' => \&calc_total_size, # Ctrl+u
+	'd2'  => \&open_binary,     # Ctrl+b
+	'd20' => \&target_diff_source # Ctrl+t
 
 );
 
@@ -105,7 +105,7 @@ while( 1 )
 	{
 		$cmd{$key}->();
 	}
-	elsif( $key =~ /[a-zA-Z-_\.\?\*]+/o )
+	elsif( $key =~ /[0-9a-zA-Z-_\.\?\*]+/o )
 	{
 		if ( $key eq '^[DEL' ) {
 			$g_search = substr( $g_search, 0, length($g_search)-1 );
@@ -1612,7 +1612,7 @@ sub grep_file
 		my $path = "";
 		my $lnumber = 0;
 		my $hit = "";
-		if ( $line =~ /^(.*):(\d+):(.*)/o )
+		if ( $line =~ /^([^:]*):(\d+):(.*)$/o )
 		{
 			$path = $1;
 			$lnumber = $2;

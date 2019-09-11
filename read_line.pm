@@ -108,7 +108,7 @@ sub wait_key
 		$ret = "\t";
 	}
 	elsif ( int($c_sz) < 27 ) {
-		$ret = $c_sz;
+		$ret = "d$c_sz";
 	}
 	else {
 		$ret = $input;
