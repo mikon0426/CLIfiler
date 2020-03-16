@@ -202,7 +202,7 @@ sub cmd_right
 				system( "nano $path" );
 			}
 			else {
-				system( "vim -u $g_script_dir/.vimrc $path" );
+				system( "vim -u '$g_script_dir/.vimrc' '$path'" );
 			}
 			ReadLine::stty_unable();
 		}
