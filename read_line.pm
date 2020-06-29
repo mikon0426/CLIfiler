@@ -13,17 +13,23 @@ our ($g_term_height, $g_term_width) = get_term_size();
 my $g_uname = `uname`;
 chomp( $g_uname );
 
-#----- sample
-#stty_save();
-#stty_unable();
+if ( $ARGV[0] >= 1 )
+{
+	stty_save();
+	stty_unable();
 
-#my $str = read_line("input=","あaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaw");
-#printf( "str=[%s]\n", $str );
+	if ( $ARGV[0] == 1 ) {
+		my $str = read_line("input=", "");
+		printf( "\nstr=[%s]\n", $str );
+	}
+	elsif ( $ARGV[0] == 2 ) {
+		my $str = wait_key();
+		printf( "str=[%s]\n", $str );
+	}
 
-#stty_load();
-
-#exit(0);
-
+	stty_load();
+	exit(0);
+}
 
 
 
