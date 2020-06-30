@@ -78,6 +78,7 @@ my $g_script_dir = dirname($0);
 my $g_user = "";
 my $g_uid = 0;
 my @g_gid = ();
+my $g_uname = "";
 
 #-------------------------------------------------------------------------------
 # {{{ main
@@ -88,6 +89,7 @@ ReadLine::stty_unable();
 $g_pwd = `pwd`; chomp( $g_pwd );
 $g_user = `whoami`; chomp( $g_user );
 $g_uid = `id -u $g_user`; chomp( $g_uid );
+$g_uname = `uname`; chomp( $g_uname );
 load_di();
 #init_file_action();
 init_my_group();
@@ -182,7 +184,14 @@ sub cmd_right
 		elsif ( defined($item->{exec}) )
 		{
 			my $cmd = $item->{exec};
+			ReadLine::stty_load();
+			set_visible_cursor(1);
+
 			system( $cmd );
+
+			ReadLine::stty_unable();
+			set_visible_cursor(0);
+			$mi{update} = 1;
 		}
 	}
 	else
@@ -196,15 +205,7 @@ sub cmd_right
 			move_dir( $path );
 		}
 		else {
-			ReadLine::stty_load();
-			my $path_vim = `which vim`;
-			if ( $path_vim eq "" ) {
-				system( "nano $path" );
-			}
-			else {
-				system( "vim -u '$g_script_dir/.vimrc' '$path'" );
-			}
-			ReadLine::stty_unable();
+			edit_file( $path );
 		}
 	}
 	
@@ -1211,6 +1212,69 @@ sub delete_diff_target
 #-------------------------------------------------------------------------------
 # {{{ exec
 #-------------------------------------------------------------------------------
+sub get_edit_cmd
+{
+	my $fname = shift;
+	my $line_number = shift;
+
+	if ( $fname eq '' ) { return ''; }
+	if ( !-f $fname ) { return '' }
+
+	my $vim  = `which vim`;  chomp( $vim );
+	my $vi   = `whih vi`;    chomp( $vi );
+	my $nano = `which nano`; chomp( $nano );
+	my $cmd = "";
+
+	if ( $g_uname eq 'Darwin' )
+	{
+		if ( $vim eq '' ) { return ''; }
+		$cmd = sprintf( "$vim -u $g_script_dir/.vimrc %s '$fname'", defined($line_number) ? "-c $line_number" : "" );
+	}
+	elsif ( $g_uname eq 'SunOS' )
+	{
+		if ( $vi eq '' ) { return ''; }
+		$cmd = sprintf( "$vi %s '$fname'", defined($line_number) ? "-c :$line_number" : "" );
+	}
+	elsif ( $g_uname eq 'Linux' )
+	{
+		if ( $vim ne '' ) {
+			$cmd = sprintf( "$vim -u $g_script_dir/.vimrc %s '$fname'", defined($line_number) ? "-c $line_number" : "" );
+		}
+		elsif ( $nano ne '' ) {
+			$cmd = "$nano '$fname'";
+		}
+		else {
+			return '';
+		}
+	}
+	else
+	{
+		$cmd = "vi '$fname'";
+	}
+
+	return $cmd;
+}
+
+sub edit_file
+{
+	my $fname = shift;
+	my $line_number = shift;
+
+	my $edit_cmd  = get_edit_cmd( $fname, $line_number );
+	if ( $edit_cmd eq '' ) {
+		return;
+	}
+
+	ReadLine::stty_load();
+	set_visible_cursor(1);
+
+	system( $edit_cmd );
+
+	ReadLine::stty_unable();
+	set_visible_cursor(0);
+	$mi{update} = 1;
+}
+
 sub copy_file
 {
 	my $marked_count = get_marked_count();
@@ -1597,11 +1661,19 @@ sub grep_file
 	my $pwd = get_real_pwd();
 	my @di_arr = ();
 	my $cmd = "";
-	if ( $is_recursive ) {
-		$cmd = "grep --color=never -rnI '$key_str' $pwd";
+
+	if ( $g_uname eq 'SunOS' )
+	{
+		$cmd = "find $pwd | xargs grep -n $key_str";
 	}
-	else {
-		$cmd = "grep --color=never -nI '$key_str' $pwd/*";
+	else
+	{
+		if ( $is_recursive ) {
+			$cmd = "grep --color=never -rnI '$key_str' $pwd $pwd/.*";
+		}
+		else {
+			$cmd = "grep --color=never -nI '$key_str' $pwd/* $pwd/.*";
+		}
 	}
 
 	ReadLine::stty_load();
@@ -1628,7 +1700,7 @@ sub grep_file
 		my %di_info = ();
 		$di_info{name} = sprintf( "%-20s %s", $fname, $hit );
 		$di_info{type} = 'f';
-		$di_info{exec} = "vim -u $g_script_dir/.vimrc -c $lnumber '$path'";
+		$di_info{exec} = get_edit_cmd( $path, $lnumber );
 		$di_info{perm} = 1;
 		$di_info{real_path} = $path;
 		push( @di_arr, \%di_info );
