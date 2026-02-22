@@ -329,6 +329,8 @@ sub update_dir
 
 	my @di_sorted = sort( compare_di @di_array );
 	$di{$dir_name} = \@di_sorted;
+
+	update_cursor();
 }
 
 sub compare_di
@@ -396,6 +398,15 @@ sub move_dir
 		return 0;
 	}
 
+
+	if ( $mi{virtual} == 1 )
+	{
+		my %menu_info;
+		$menu_info{cur_loc}        = $mi{cur_loc};
+		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
+		$mi_bk{'<virtual>'}
+	}
+
 	if ( defined($di{$new_dir}) )
 	{
 		$mi_bk{$g_pwd}->{cur_loc}       = $mi{cur_loc};
@@ -460,11 +471,15 @@ sub move_virtual
 		$mi{virtual_return} = $g_pwd;
 	}
 	else {
+		my %menu_info;
+		$menu_info{cur_loc}        = $mi{cur_loc};
+		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
+		$mi_bk{'<virtual>'} = \%menu_info;
 	}
 
 	$g_pwd = $new_dir;
-	$mi{cur_loc} = 0;
-	$mi{cur_loc_offset} = 0;
+	$mi{cur_loc}        = $mi_bk{'<virtual>'}->{cur_loc};
+	$mi{cur_loc_offset} = $mi_bk{'<virtual>'}->{cur_loc_offset};
 	$mi{cur_loc_prev} = 0;
 	$mi{update} = 1;
 
@@ -499,6 +514,11 @@ sub mk_abs_path
 #-------------------------------------------------------------------------------
 # {{{ cursor
 #-------------------------------------------------------------------------------
+sub update_cursor
+{
+	set_cursor( $mi{cur_loc} );
+}
+
 sub set_cursor
 {
 	my $loc = shift;
@@ -803,7 +823,8 @@ sub draw_header
 
 
 	printf( "\e[3;1H" );
-	if ( $mi{virtual} == 0 )
+	#if ( $mi{virtual} == 0 )
+	if ( 0 )
 	{
 		my $df = `df -h '$g_pwd' | tail -n1 2>/dev/null`;
 		if ( $df ne "" )
@@ -1174,6 +1195,7 @@ sub save_diff_target
 
 	close( $fh );
 
+	`chmod 777 $fname`;
 	return $write_count;
 }
 
@@ -1245,6 +1267,12 @@ sub get_edit_cmd
 		}
 		else {
 			return '';
+		}
+	}
+	elsif ( $g_uname =~ /MINGW64/ )
+	{
+		if ( $vim ne '' ) {
+			$cmd = sprintf( "$vim -u $g_script_dir/.vimrc %s '$fname'", defined($line_number) ? "-c $line_number" : "" );
 		}
 	}
 	else
@@ -1457,6 +1485,15 @@ sub mk_delete_unique_name
 
 sub delete_file
 {
+	my $del_dir = "";
+	if ( $g_uname =~ /MINGW64/ ) {
+		$del_dir = $g_script_dir . "/deleted";
+	}
+	else {
+		$del_dir = "/var/tmp";
+	}
+
+
 	my $marked_count = get_marked_count();
 	if ( $marked_count == 0 )
 	{
@@ -1467,9 +1504,9 @@ sub delete_file
 			return;
 		}
 		print( "\n" );
-
+		
 		my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $item->{name} );
-		my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($item->{name}), $del_name );
+		my $cmd = sprintf( "mv '%s' '%s/%s'", mk_abs_path($item->{name}), $del_dir, $del_name );
 		my $ret = system( $cmd );
 		$ret >>= 8;
 		if ( $ret != 0 ) {
@@ -1498,7 +1535,7 @@ sub delete_file
 		foreach my $targ ( @list )
 		{
 			my $del_name = sprintf( "%s.%s", mk_delete_unique_name(), $targ );
-			my $cmd = sprintf( "mv '%s' '/var/tmp/%s'", mk_abs_path($targ), $del_name );
+			my $cmd = sprintf( "mv '%s' '%s/%s'", mk_abs_path($targ), $del_dir, $del_name );
 			my $ret = system( $cmd );
 			$ret >>= 8;
 			if ( $ret != 0 ) {

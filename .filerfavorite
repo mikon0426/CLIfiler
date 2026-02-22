@@ -2,4 +2,5 @@ $ENV{HOME}
 /mnt/hgfs/VMShare
 /Users/user/Desktop/work_vm/VMShare
 "$g_script_dir/filer.pl"
+"$g_script_dir/.filerlastdir"
 
