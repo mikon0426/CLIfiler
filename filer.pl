@@ -83,8 +83,9 @@ my $g_uname = "";
 #-------------------------------------------------------------------------------
 # {{{ main
 #-------------------------------------------------------------------------------
-ReadLine::stty_save();
-ReadLine::stty_unable();
+# enter row mode
+ReadLine::tty_save();
+ReadLine::tty_set_raw();
 
 $g_pwd = `pwd`; chomp( $g_pwd );
 $g_user = `whoami`; chomp( $g_user );
@@ -121,10 +122,34 @@ while( 1 )
 	}
 }
 
+save_fvrloc();
 save_di();
-ReadLine::stty_load();
+
+# leave raw mode
+ReadLine::tty_restore();
 set_visible_cursor(1);
+
 exit(0);
+
+
+
+END {
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+}
+
+$SIG{INT} = sub {
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+	exit(1);
+};
+
+$SIG{TERM} = sub {
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+	exit(1);
+};
+
 # }}}
 
 
@@ -184,13 +209,15 @@ sub cmd_right
 		elsif ( defined($item->{exec}) )
 		{
 			my $cmd = $item->{exec};
-			ReadLine::stty_load();
+
+			ReadLine::tty_restore();
 			set_visible_cursor(1);
 
 			system( $cmd );
 
-			ReadLine::stty_unable();
+			ReadLine::tty_set_raw();
 			set_visible_cursor(0);
+
 			$mi{update} = 1;
 		}
 	}
@@ -248,9 +275,9 @@ sub cmd_update_display
 	}
 
 	ReadLine::update_term_size();
-	$mi{cur_height_max} = $ReadLine::g_term_height - $g_menu_start_row,
-	$mi{term_height_max} = $ReadLine::g_term_height,
-	$mi{term_width_max} = $ReadLine::g_term_width,
+	$mi{cur_height_max} = $ReadLine::g_term_height - $g_menu_start_row;
+	$mi{term_height_max} = $ReadLine::g_term_height;
+	$mi{term_width_max} = $ReadLine::g_term_width;
 	$mi{update} = 1;
 }
 
@@ -364,20 +391,21 @@ sub is_permission
 	my $f_uid = shift;
 	my $f_gid = shift;
 
+	# owner
 	if ( $g_uid == $f_uid ) {
-		return 1;
+		return ($f_mode & 0400) ? 1 : 0;
 	}
 
+	# group
 	foreach my $gid ( @g_gid )
 	{
 		if ( $gid == $f_gid ) {
-			return 1;
+			return ($f_mode & 0040) ? 1 : 0;
 		}
 	}
 
-	if ( $f_mode & 0x04 ) {
-		return 1;
-	}
+	# other
+	return ($f_mode & 0004) ? 1 : 0;
 
 	
 
@@ -401,10 +429,7 @@ sub move_dir
 
 	if ( $mi{virtual} == 1 )
 	{
-		my %menu_info;
-		$menu_info{cur_loc}        = $mi{cur_loc};
-		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
-		$mi_bk{'<virtual>'}
+		save_fvrloc();
 	}
 
 	if ( defined($di{$new_dir}) )
@@ -415,6 +440,9 @@ sub move_dir
 		$g_pwd = $new_dir;
 		$mi{cur_loc}        = $mi_bk{$g_pwd}->{cur_loc};
 		$mi{cur_loc_offset} = $mi_bk{$g_pwd}->{cur_loc_offset};
+#		printf("g_pwd=[%s]\n", $g_pwd);
+#		printf("cur_loc=[%d] cur_offset=[%d]\n", $mi{cur_loc}, $mi{cur_loc_offset});
+#		ReadLine::wait_key();
 		$mi{update} = 1;
 		mark_delete();
 		$g_search = "";
@@ -427,7 +455,9 @@ sub move_dir
 		$menu_info{cur_loc}        = $mi{cur_loc};
 		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
 		$mi_bk{$g_pwd} = \%menu_info;
-
+#		printf("$g_pwd=[%d]\n", $g_pwd);
+#		printf("cur_loc=[%s]\n", $mi_bk{$g_pwd}->{cur_loc} );
+#		printf("cur_offset=[%s]\n", $mi_bk{$g_pwd}->{cur_loc_offset} );
 		$mi{cur_loc} = 0;
 		$mi{cur_loc_offset} = 0;
 		$mi{cur_loc_prev} = 0;
@@ -471,15 +501,11 @@ sub move_virtual
 		$mi{virtual_return} = $g_pwd;
 	}
 	else {
-		my %menu_info;
-		$menu_info{cur_loc}        = $mi{cur_loc};
-		$menu_info{cur_loc_offset} = $mi{cur_loc_offset};
-		$mi_bk{'<virtual>'} = \%menu_info;
+		return;
 	}
 
 	$g_pwd = $new_dir;
-	$mi{cur_loc}        = $mi_bk{'<virtual>'}->{cur_loc};
-	$mi{cur_loc_offset} = $mi_bk{'<virtual>'}->{cur_loc_offset};
+	load_fvrloc();
 	$mi{cur_loc_prev} = 0;
 	$mi{update} = 1;
 
@@ -674,9 +700,13 @@ sub get_selected_path
 sub get_search_string
 {
 	my $search = $g_search;
-	$search =~ s/[.]/\\./g;
-	$search =~ s/[?]/./g;
-	$search =~ s/[*]/.*/g;
+#	$search =~ s/[.]/\\./g;
+#	$search =~ s/[?]/./g;
+#	$search =~ s/[*]/.*/g;
+#
+	$search = quotemeta($search);
+	$search =~ s/\\\*/.*/g;
+	$search =~ s/\\\?/./g;
 	return $search;
 }
 
@@ -1052,6 +1082,49 @@ sub load_di
 
 }
 
+sub save_fvrloc
+{
+	if ( $g_pwd ne '<favorite_list>' ) {
+		return;
+	}
+
+	my $fname = "$g_script_dir/.filerfvrloc";
+	my $ret = open( my $fh, '>', $fname );
+	if ( !$ret ) {
+		return;
+	}
+
+	printf( $fh "%d\n", $mi{cur_loc} );
+	printf( $fh "%d\n", $mi{cur_loc_offset} );
+
+	close( $fh );
+}
+
+sub load_fvrloc
+{
+	if ( $g_pwd ne '<favorite_list>' ) {
+		return;
+	}
+
+	my $fname = "$g_script_dir/.filerfvrloc";
+	my $ret = open( my $fh, '<', $fname );
+	if ( !$ret ) {
+		$mi{cur_loc} = 0;
+		$mi{cur_loc_offset} = 0;
+		return;
+	}
+
+	my $loc = <$fh>;
+	my $offset = <$fh>;
+	chomp($loc);
+	chomp($offset);
+
+	$mi{cur_loc} = int($loc);
+	$mi{cur_loc_offset} = int($offset);
+
+	close( $fh );
+}
+
 sub init_file_action
 {
 	my $fname = "$g_script_dir/.fileraction";
@@ -1111,7 +1184,7 @@ sub add_file_action
 
 	close( $fh );
 
-	my $total_action_num = `wc -l $fname`;
+	my $total_action_num = int(`wc -l $fname`);
 	return $total_action_num - 1;
 }
 
@@ -1180,11 +1253,18 @@ sub save_diff_target
 	{
 		my $path_full;
 
-		if ( $g_pwd eq '/' ) {
-			$path_full = "/$path";
+		if ( $g_pwd eq "<favorite_list>" )
+		{
+			$path_full = $path;
 		}
-		else {
-			$path_full = "$g_pwd/$path";
+		else
+		{
+			if ( $g_pwd eq '/' ) {
+				$path_full = "/$path";
+			}
+			else {
+				$path_full = "$g_pwd/$path";
+			}
 		}
 
 		if ( -f $path_full ) {
@@ -1243,7 +1323,7 @@ sub get_edit_cmd
 	if ( !-f $fname ) { return '' }
 
 	my $vim  = `which vim`;  chomp( $vim );
-	my $vi   = `whih vi`;    chomp( $vi );
+	my $vi   = `which vi`;   chomp( $vi );
 	my $nano = `which nano`; chomp( $nano );
 	my $cmd = "";
 
@@ -1293,13 +1373,14 @@ sub edit_file
 		return;
 	}
 
-	ReadLine::stty_load();
+	ReadLine::tty_restore();
 	set_visible_cursor(1);
 
 	system( $edit_cmd );
 
-	ReadLine::stty_unable();
+	ReadLine::tty_set_raw();
 	set_visible_cursor(0);
+
 	$mi{update} = 1;
 }
 
@@ -1623,7 +1704,14 @@ sub calc_total_size
 sub open_binary
 {
 	my $path = get_selected_path();
+
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+
 	system( "vim -b -u $g_script_dir/.vimrc '$path'" );
+
+	ReadLine::tty_set_raw();
+	set_visible_cursor(0);
 }
 
 sub find_file
@@ -1652,7 +1740,7 @@ sub find_file
 		my $d = dirname($line);
 
 		my $item_name = "";
-		if ( $b =~ /$key_str/ ) {
+		if ( $b =~ /\Q$key_str\E/ ) {
 			if    ( -l $line ) { $item_name .= "l "; }
 			elsif ( -d $line ) { $item_name .= "d "; }
 			else               { $item_name .= "f "; }
@@ -1706,10 +1794,10 @@ sub grep_file
 	else
 	{
 		if ( $is_recursive ) {
-			$cmd = "grep --color=never -rnI '$key_str' $pwd $pwd/.*";
+			$cmd = "grep --color=never -rnI $key_str $pwd $pwd/.*";
 		}
 		else {
-			$cmd = "grep --color=never -nI '$key_str' $pwd/* $pwd/.*";
+			$cmd = "grep --color=never -nI $key_str $pwd/* $pwd/.*";
 		}
 	}
 
@@ -1755,6 +1843,11 @@ sub move_fvr
 	if ( scalar(@favorites) == 0 ) {
 		return;
 	}
+
+	local *STDOUT;
+	local *STDERR;
+	open( STDOUT, '>', '/dev/null' );
+	open( STDERR, '>', '/dev/null' );
 
 	my $vdir = "<favorite_list>";
 	my @di_arr = ();
@@ -1831,11 +1924,17 @@ sub exec_diff
 	{
 		$cmd .= " $dt";
 	}
+
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+
 	system( $cmd );
+
+	ReadLine::tty_set_raw();
+	set_visible_cursor(0);
 
 	delete_diff_target();
 	cmd_update_display();
-
 }
 
 # }}}
