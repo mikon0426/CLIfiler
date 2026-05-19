@@ -19,6 +19,14 @@ our ($g_term_height, $g_term_width) = get_term_size();
 my $g_uname = `uname`;
 chomp( $g_uname );
 
+# bracketed paste
+my $BRACKETED_PASTE_ON  = "\e[?2004h";
+my $BRACKETED_PASTE_OFF = "\e[?2004l";
+my $PASTE_BEGIN = "\e[200~";
+my $PASTE_END   = "\e[201~";
+
+my $g_paste_buffer   = '';
+
 
 
 #==================================================
@@ -138,12 +146,15 @@ my %g_keymap = (
 #--------------------------------------------------
 
     "\e[3~" => 'DELETE',
+    "\x7F"  => 'DELETE',
     "\e[2~" => 'INSERT',
     "\e[5~" => 'PAGE_UP',
     "\e[6~" => 'PAGE_DOWN',
 
     "\e[H" => 'HOME',
     "\e[F" => 'END',
+    "\e[1~" => 'HOME',
+    "\e[4~" => 'END',
 
 #--------------------------------------------------
 # Ctrl keys (1 byte control chars)
@@ -175,10 +186,6 @@ my %g_keymap = (
     "\x1a" => 'CTRL_Z',
 );
 
-my %g_prefix_map;
-
-_build_prefix_map();
-
 
 
 if ( $ARGV[0] >= 1 )
@@ -207,8 +214,12 @@ if ( $ARGV[0] >= 1 )
 #			my $str = "\e";
 			my $str = wait_key2();
 #			printf "%v02X\n", $str;
-			printf( "str=[%s]\n", normalize_key($str) );
+			printf( "str=[%s %x]\n", normalize_key($str), unpack('C*', $str) );
 
+			if ( $str eq 'PASTE' ) {
+				my $pdata = drain_paste();
+				printf("pdata=[%s]\n", $pdata)
+			}
 			if ( $str eq 'z' ) {
 				last;
 			}
@@ -221,46 +232,46 @@ if ( $ARGV[0] >= 1 )
 
 
 
-sub stty_save
-{
-	$g_stty_setting=`stty -g`;
-}
+#sub stty_save
+#{
+#	$g_stty_setting=`stty -g`;
+#}
 
-sub stty_unable
-{
-	`stty discard undef`;
-	`stty eof undef`;
-	`stty eol undef`;
-	`stty eol2 undef`;
-	`stty erase undef`;
-	`stty intr undef`;
-	`stty kill undef`;
-	`stty lnext undef`;
-	`stty quit undef`;
-	`stty start undef`;
-	`stty stop undef`;
-	`stty susp undef`;
-	`stty werase undef`;
+#sub stty_unable
+#{
+#	`stty discard undef`;
+#	`stty eof undef`;
+#	`stty eol undef`;
+#	`stty eol2 undef`;
+#	`stty erase undef`;
+#	`stty intr undef`;
+#	`stty kill undef`;
+#	`stty lnext undef`;
+#	`stty quit undef`;
+#	`stty start undef`;
+#	`stty stop undef`;
+#	`stty susp undef`;
+#	`stty werase undef`;
+#
+#	if ( $g_uname eq "Darwin" )
+#	{
+#		`stty dsusp undef`;
+#		`stty reprint undef`;
+#		`stty status undef`;
+#	}
+#
+#	if ( $g_uname eq "Linux" )
+#	{
+#		`stty swtch undef`;
+#		`stty rprnt undef`;
+#	}
+#
+#}
 
-	if ( $g_uname eq "Darwin" )
-	{
-		`stty dsusp undef`;
-		`stty reprint undef`;
-		`stty status undef`;
-	}
-
-	if ( $g_uname eq "Linux" )
-	{
-		`stty swtch undef`;
-		`stty rprnt undef`;
-	}
-
-}
-
-sub stty_load
-{
-	`stty $g_stty_setting`;
-}
+#sub stty_load
+#{
+#	`stty $g_stty_setting`;
+#}
 
 sub tty_save
 {
@@ -290,6 +301,10 @@ sub tty_set_raw
 	$g_termios->setcc( VMIN, 1 );
 	$g_termios->setcc( VTIME, 0 );
 	$g_termios->setattr( $g_stdin, TCSANOW );
+	
+	# enable bracketed paste mode
+	print STDOUT $BRACKETED_PASTE_ON;
+	STDOUT->flush();
 
 }
 
@@ -302,6 +317,10 @@ sub tty_restore
 	$g_termios->setcc( VMIN, $g_vmin_org );
 	$g_termios->setcc( VTIME, $g_vtime_org );
 	$g_termios->setattr($g_stdin, TCSANOW);
+	
+	# disable bracketed paste mode
+	print STDOUT $BRACKETED_PASTE_OFF;
+	STDOUT->flush();
 
 #	print "\e[?25h";
 }
@@ -387,28 +406,6 @@ sub wait_key
 
 
 
-#==================================================
-# prefix map生成
-#==================================================
-sub _build_prefix_map {
-
-    %g_prefix_map = ();
-
-    for my $seq (keys %g_keymap) {
-
-        #------------------------------------------
-        # 自分自身は除外
-        #------------------------------------------
-        for my $i (1 .. length($seq) - 1) {
-
-            my $prefix =
-                substr($seq, 0, $i);
-
-            $g_prefix_map{$prefix} = 1;
-        }
-    }
-}
-
 #==========================================================
 # _has_os_input()
 #
@@ -429,115 +426,551 @@ sub _has_os_input {
     return select($rin, undef, undef, $timeout);
 }
 
-#==========================================================
+#===========================================================
 # wait_key_raw()
 #
-# raw key sequence を返す。
+# 説明:
+#   STDINから1イベントを取得する最下位入力レイヤ。
 #
-# 戻り値例:
+#   ESC起点の入力については各プロトコル解析関数へ委譲し、
+#   結果をそのままイベントとして返す。
 #
-#   "a"
-#   "\e[A"
-#   "\x03"
+#   本関数の責務は「分岐のみ」であり、
+#   解析・解釈は行わない。
 #
-# 特徴:
+# 戻り値:
+#   undef   : EOF / read error
+#   'PASTE' : pasteイベント
+#   other   : CSI / SS3 / UTF8 / ASCII / ESC単体
 #
-#   - sysread(1) ベース
-#   - ESC時のみ追加読み込み
-#   - 完全一致のみ採用
-#   - 最大キー長で打ち切り
-#==========================================================
+#===========================================================
 sub wait_key_raw {
 
-    my $seq = '';
+    while(1) {
 
-    while( 1 ) {
+        #---------------------------------------------------
+        # 1byte取得
+        #---------------------------------------------------
+        my $buf = '';
+        my $ret = sysread(STDIN, $buf, 1);
 
-        #------------------------------------------
-        # 1byte読む
-        #------------------------------------------
-        my $ret =
-            sysread(STDIN, my $ch, 1);
-
-        #------------------------------------------
-        # EOF / error
-        #------------------------------------------
         if( !defined($ret) || $ret <= 0 ) {
+            return undef;
+        }
+
+        my $c = $buf;
+        my $o = ord($c);
+
+        #===================================================
+        # ASCII fast path
+        #===================================================
+        if( $o < 0x80 ) {
+
+            #------------------------------------------------
+            # ESCシーケンス処理
+            #------------------------------------------------
+            if( $c eq "\e" ) {
+
+                #-------------------------------------------
+                # 入力が来なければESC単体として確定
+				# 後続入力待ち（timeout内に入力が来るかを確認する）
+				# ESC単体かどうか確定するために入力がまだあるか待つ
+				# 0.01 → 速いが危険
+				# 0.03 → ギリ
+				# 0.05 → 標準
+				# 0.1 → 安定
+                #-------------------------------------------
+                if( !_has_os_input(0.03) ) {
+
+                    # ESC単体確定
+                    return "\e";
+                }
+                
+                # まずESC後の最初の1byteだけ確認
+                my $next = '';
+                my $r = sysread(STDIN, $next, 1);
+
+                if( !defined($r) || $r <= 0 ) {
+                    return "\e";
+                }
+
+                my $seq = "\e" . $next;
+
+                #================================================
+                # CSI系（ESC [）
+                #================================================
+                if( $next eq "[" ) {
+
+                    # CSI完全読み込み
+                    my $csi = csi_read($seq, 0.5);
+
+                    if( !defined($csi) ) {
+                        return undef;
+                    }
+
+                    #--------------------------------------------
+                    # PASTE BEGIN判定（csi_read結果ベース）
+                    #--------------------------------------------
+                    if( $csi eq 'PASTE_BEGIN' ) {
+
+                        my $recv = paste_read(
+                            1024*1024,   # max_byte
+                            3,           # total_timeout
+                            0.5          # io_timeout
+                        );
+
+                        if( !defined($recv) ) {
+                            return undef;
+                        }
+
+                        return 'PASTE';
+                    }
+
+                    return $csi;
+                }
+
+                #================================================
+                # SS3（ESC O）
+                #================================================
+                if( $next eq "O" ) {
+
+                    my $ss3 = ss3_read($seq, 0.5);
+
+                    if( !defined($ss3) ) {
+                        return undef;
+                    }
+
+                    return $ss3;
+                }
+
+                #================================================
+                # ESC単体 or 未知シーケンス
+                #================================================
+                return $seq;
+            }
+
+            #------------------------------------------------
+            # ASCII通常文字
+            #------------------------------------------------
+            return $c;
+        }
+
+        #===================================================
+        # UTF-8
+        #===================================================
+        my $utf8 = utf8_read($c, 0.5);
+
+        if( !defined($utf8) ) {
+            return undef;
+        }
+
+        return $utf8;
+    }
+}
+
+#===========================================================
+# csi_read()
+#
+# 説明:
+#   CSI sequence を最後まで読み込む。
+#
+# 開始条件:
+#   ESC [ を既に読み込み済みであること。
+#
+# 処理内容:
+#   CSI終端文字が現れるまで1byteずつ追加取得する。
+#
+#   CSI終端文字:
+#       0x40 (@)
+#       ～
+#       0x7e (~)
+#
+#   sequence完成後、
+#   keymapに存在するか確認する。
+#
+#   未知CSI sequenceの場合は
+#   warnを出してundefを返す。
+#
+# timeout:
+#   各追加読み込み前に
+#   _has_os_input() により監視する。
+#
+# 引数:
+#   $seq
+#       初期sequence。
+#       通常は "\e["。
+#
+#   $timeout
+#       追加入力待ちtimeout(sec)
+#
+# return:
+#   undef         : timeout / read error / unknown sequence
+#   'PASTE_BEGIN' : Paste開始用のタグだった
+#   other         : 完成したCSI sequence
+#   
+#===========================================================
+sub csi_read {
+
+    my ($seq, $timeout) = @_;
+
+    while(1)
+    {
+
+        #---------------------------------------------------
+        # 後続入力待ち
+        #---------------------------------------------------
+        if( !_has_os_input($timeout) ) {
+
+            warn "csi_read(): timeout\n";
+            return undef;
+        }
+
+        my $buf = '';
+
+        my $ret = sysread(STDIN, $buf, 1);
+
+        #---------------------------------------------------
+        # stdin切断またはread失敗
+        #---------------------------------------------------
+        if( !defined($ret) || $ret <= 0 ) {
+
+            warn "csi_read(): sysread failed\n";
+            return undef;
+        }
+
+        $seq .= $buf;
+
+        my $o = ord($buf);
+
+        #===================================================
+        # CSI終端判定
+        #===================================================
+        #
+        # CSI final byte:
+        #   0x40 (@)
+        #     ～
+        #   0x7e (~)
+        #
+        #===================================================
+        if( $o >= 0x40 && $o <= 0x7e )
+        {
+            #-----------------------------------------------
+            # known CSI sequence
+            #-----------------------------------------------
+            if( exists($g_keymap{$seq}) ) {
+                return $seq;
+            }
+
+            #-----------------------------------------------
+            # Bracketed Paste Begin
+            #-----------------------------------------------
+            if( $seq eq $PASTE_BEGIN ) {
+                return 'PASTE_BEGIN';
+            }
+
+            #-----------------------------------------------
+            # unknown CSI sequence
+            #-----------------------------------------------
+            warn sprintf(
+                "csi_read(): unknown CSI sequence [%v02X]\n",
+                $seq
+            );
+
+            return undef;
+        }
+    }
+}
+
+#===========================================================
+# ss3_read()
+#
+# 説明:
+#   SS3 sequence を最後まで読み込む。
+#
+# 開始条件:
+#   ESC O を既に読み込み済みであること。
+#
+# 処理内容:
+#   SS3 sequence の最後の1byteを取得し、
+#   sequenceを完成させる。
+#
+#   sequence完成後、
+#   keymapに存在するか確認する。
+#
+#   未知SS3 sequenceの場合は
+#   warnを出してundefを返す。
+#
+# SS3仕様:
+#   ESC O <final>
+#
+#   final は通常1byte固定。
+#
+# timeout:
+#   追加読み込み前に
+#   _has_os_input() により監視する。
+#
+# 引数:
+#   $seq
+#       初期sequence。
+#       通常は "\eO"。
+#
+#   $timeout
+#       追加入力待ちtimeout(sec)
+#
+# return:
+#   undef : timeout / read error / unknown sequence
+#   other : 完成したSS3 sequence
+#===========================================================
+sub ss3_read {
+
+    my ($seq, $timeout) = @_;
+
+    #---------------------------------------------------
+    # 後続入力待ち
+    #---------------------------------------------------
+    if( !_has_os_input($timeout) ) {
+
+        warn "ss3_read(): timeout\n";
+
+        return undef;
+    }
+
+    my $buf = '';
+
+    my $ret = sysread(STDIN, $buf, 1);
+
+    #---------------------------------------------------
+    # stdin切断またはread失敗
+    #---------------------------------------------------
+    if( !defined($ret) || $ret <= 0 ) {
+
+        warn "ss3_read(): sysread failed\n";
+
+        return undef;
+    }
+
+    $seq .= $buf;
+
+    #===================================================
+    # known SS3 sequence
+    #===================================================
+    if( exists($g_keymap{$seq}) ) {
+
+        return $seq;
+    }
+
+    #===================================================
+    # unknown SS3 sequence
+    #===================================================
+    warn sprintf(
+        "ss3_read(): unknown SS3 sequence [%v02X]\n",
+        $seq
+    );
+
+    return undef;
+}
+
+#===========================================================
+# paste_read()
+#
+# 説明:
+#   Bracketed Paste のpasteデータを取得する。
+#
+# 開始条件:
+#   ESC [200~ を既に受信済みであること。
+#
+# 処理内容:
+#   ESC [201~ が出現するまでSTDINからデータを読み込み、
+#   $g_paste_buffer に蓄積する。
+#
+#   終了シーケンスはバッファに含めない。
+#
+# timeout仕様:
+#   ・total_timeout : paste全体の最大待ち時間
+#   ・io_timeout    : 1回の入力待ちタイムアウト
+#
+# max_byte:
+#   ・$g_paste_buffer + 今回追加分 の合計サイズで制限
+#
+# 引数:
+#   $max_byte
+#       paste全体最大byte数
+#
+#   $total_timeout
+#       全体タイムアウト(sec)
+#
+#   $io_timeout
+#       _has_os_input() に渡す待ち時間(sec)
+#       例: 0.01〜0.5
+#
+# return:
+#   undef : timeout / error / size over
+#   number: 今回追加したbyte数
+#===========================================================
+sub paste_read {
+
+    my ($max_byte, $total_timeout, $io_timeout) = @_;
+
+    my $start_time = time();
+    my $recv_size  = 0;
+
+    while(1) {
+
+        #---------------------------------------------------
+        # 全体timeoutチェック
+        #---------------------------------------------------
+        if( (time() - $start_time) >= $total_timeout ) {
+
+            warn "paste_read(): total timeout\n";
+            return undef;
+        }
+
+        #---------------------------------------------------
+        # 入力待ち（可変タイムアウト）
+        #---------------------------------------------------
+        if( !_has_os_input($io_timeout) ) {
+            next;
+        }
+
+        my $buf = '';
+        my $ret = sysread(STDIN, $buf, 1);
+
+        #---------------------------------------------------
+        # read error
+        #---------------------------------------------------
+        if( !defined($ret) || $ret <= 0 ) {
+
+            warn "paste_read(): sysread failed\n";
+            return undef;
+        }
+
+        $g_paste_buffer .= $buf;
+        $recv_size += length($buf);
+
+        #---------------------------------------------------
+        # サイズチェック（累積ベース）
+        #---------------------------------------------------
+        if( length($g_paste_buffer) > $max_byte ) {
+
+            warn sprintf(
+                "paste_read(): size over (%d byte)\n",
+                $max_byte
+            );
 
             return undef;
         }
 
-        $seq .= $ch;
+        #===================================================
+        # 終了シーケンス検出
+        #===================================================
+        if( length($g_paste_buffer) >= length($PASTE_END) ) {
 
-        #------------------------------------------
-        # 完全一致？
-        #------------------------------------------
-        my $is_complete =
-            exists($g_keymap{$seq});
+            my $suffix = substr(
+                $g_paste_buffer,
+                -length($PASTE_END)
+            );
 
-        #------------------------------------------
-        # まだ続きの可能性？
-        #------------------------------------------
-        my $has_prefix =
-            exists($g_prefix_map{$seq});
+            if( $suffix eq $PASTE_END ) {
 
-        #------------------------------------------
-        # 完全一致
-        # ＋
-        # 続き無し
-        #
-        # → 即確定
-        #------------------------------------------
-        if( $is_complete && !$has_prefix ) {
+                #-------------------------------------------
+                # 終了タグ除去
+                #-------------------------------------------
+                substr(
+                    $g_paste_buffer,
+                    -length($PASTE_END)
+                ) = '';
 
-            return $seq;
-        }
+                $recv_size -= length($PASTE_END);
 
-        #------------------------------------------
-        # 完全一致
-        # ＋
-        # 続きあり
-        #
-        # → 少し待つ
-        #------------------------------------------
-        if( $is_complete && $has_prefix ) {
-        
-        	# ESC単体かどうか確定するために入力がまだあるか待つ
-			# 0.01 → 速いが危険
-			# 0.03 → ギリ
-			# 0.05 → 標準
-			# 0.1 → 安定
-            if( !_has_os_input(0.03) ) {
-
-                return $seq;
+                return $recv_size;
             }
-
-            next;
         }
-
-        #------------------------------------------
-        # 未完成sequence
-        #
-        # → 続き待ち
-        #------------------------------------------
-        if( $has_prefix ) {
-
-            next;
-        }
-
-        #------------------------------------------
-        # 通常1文字
-        #------------------------------------------
-        if( length($seq) == 1 ) {
-
-            return $seq;
-        }
-
-        #------------------------------------------
-        # 不明sequence
-        #------------------------------------------
-        return $seq;
     }
+}
+
+#===========================================================
+# utf8_read()
+#
+# 説明:
+#   UTF-8マルチバイト文字を1文字単位で読み込む。
+#
+# 開始条件:
+#   ・ASCII(0x00-0x7F)ではない1byteが来た場合
+#   ・かつCSI / SS3 / PASTE等の制御系に該当しないこと
+#
+# 処理内容:
+#   先頭byteからUTF-8の文字長を判定し、
+#   必要な続きbyteを読み込んで1文字を完成させる。
+#
+#   途中でread失敗した場合は異常としてundefを返す。
+#
+# 注意:
+#   ・本関数は「1文字単位で確定したUTF-8文字」を返す
+#   ・バイナリ不正はそのまま返す場合あり
+#
+# 引数:
+#   $first_byte
+#       既に読み込んだUTF-8先頭byte
+#
+#   $io_timeout
+#       追加byte読み込み時の待ち時間(_has_os_input用)
+#
+# return:
+#   undef : read error / timeout
+#   other : 完成したUTF-8文字
+#===========================================================
+sub utf8_read {
+
+    my ($first_byte, $io_timeout) = @_;
+
+    my $utf8 = $first_byte;
+
+    my $o = ord($first_byte);
+
+    my $need = 0;
+
+    #---------------------------------------------------
+    # UTF-8 byte数判定
+    #---------------------------------------------------
+    if( ($o & 0xE0) == 0xC0 ) {
+        $need = 1;   # 2byte文字
+    }
+    elsif( ($o & 0xF0) == 0xE0 ) {
+        $need = 2;   # 3byte文字
+    }
+    elsif( ($o & 0xF8) == 0xF0 ) {
+        $need = 3;   # 4byte文字
+    }
+    else {
+
+        # 不正 or ASCII扱い
+        return $first_byte;
+    }
+
+    #---------------------------------------------------
+    # continuation byte取得
+    #---------------------------------------------------
+    for( 1 .. $need ) {
+
+        if( !_has_os_input($io_timeout) ) {
+
+            warn "utf8_read(): timeout\n";
+            return undef;
+        }
+
+        my $buf = '';
+        my $ret = sysread(STDIN, $buf, 1);
+
+        if( !defined($ret) || $ret <= 0 ) {
+
+            warn "utf8_read(): sysread failed\n";
+            return undef;
+        }
+
+        $utf8 .= $buf;
+    }
+
+    return $utf8;
 }
 
 #==========================================================
@@ -578,43 +1011,26 @@ sub normalize_key {
     return $raw;
 }
 
-#==========================================================
-# has_input()
-#
-# queueに残入力があるか。
-#==========================================================
-sub has_input {
+#===========================================================
+# has_paste()
+# pasteにデータがあるか否か。
+#===========================================================
+sub has_paste {
 
-    return _has_os_input(0);
+    return length($g_paste_buffer) ? 1 : 0;
 }
 
-#==========================================================
-# drain_input()
-#
-# stdin側に溜まっている入力を全取得。
-#
-# 非ブロッキング。
-#
-# 戻り値:
-#   raw key sequence の配列
-#==========================================================
-sub drain_input {
+#===========================================================
+# drain_paste()
+# 蓄積していたpasteデータを取得し、バッファは空にする
+#===========================================================
+sub drain_paste {
 
-    my @list;
+    my $tmp = $g_paste_buffer;
 
-    while( has_input() ) {
+    $g_paste_buffer = '';
 
-        my $raw = wait_key_raw();
-
-        if( !defined($raw) ) {
-
-            last;
-        }
-
-        push @list, normalize_key($raw);
-    }
-
-    return \@list;
+    return $tmp;
 }
 
 #==========================================================
