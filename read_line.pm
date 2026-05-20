@@ -611,17 +611,32 @@ sub wait_key_raw {
 #===========================================================
 sub csi_read {
 
-    my ($seq, $timeout) = @_;
+	my ($seq, $timeout) = @_;
+	my $max_len = 100; # 最大CSI byte数(CSI終端文字が欠損していた場合の暴走防止対策)
 
-    while(1)
-    {
+
+    while(1) {
 
         #---------------------------------------------------
-        # 後続入力待ち
+        # max length check
+        #---------------------------------------------------
+        if( length($seq) >= $max_len ) {
+
+            warn sprintf(
+                "csi_read(): sequence too long (%d byte)\n",
+                $max_len
+            );
+
+            return undef;
+        }
+
+        #---------------------------------------------------
+        # wait next input
         #---------------------------------------------------
         if( !_has_os_input($timeout) ) {
 
             warn "csi_read(): timeout\n";
+
             return undef;
         }
 
@@ -630,11 +645,12 @@ sub csi_read {
         my $ret = sysread(STDIN, $buf, 1);
 
         #---------------------------------------------------
-        # stdin切断またはread失敗
+        # stdin closed / read error
         #---------------------------------------------------
         if( !defined($ret) || $ret <= 0 ) {
 
             warn "csi_read(): sysread failed\n";
+
             return undef;
         }
 
@@ -643,29 +659,31 @@ sub csi_read {
         my $o = ord($buf);
 
         #===================================================
-        # CSI終端判定
+        # CSI final byte check
         #===================================================
         #
-        # CSI final byte:
+        # CSI終端文字:
         #   0x40 (@)
         #     ～
-        #   0x7e (~)
+        #   0x7E (~)
         #
         #===================================================
-        if( $o >= 0x40 && $o <= 0x7e )
-        {
-            #-----------------------------------------------
-            # known CSI sequence
-            #-----------------------------------------------
-            if( exists($g_keymap{$seq}) ) {
-                return $seq;
-            }
+        if( $o >= 0x40 && $o <= 0x7E ) {
 
             #-----------------------------------------------
             # Bracketed Paste Begin
             #-----------------------------------------------
             if( $seq eq $PASTE_BEGIN ) {
+
                 return 'PASTE_BEGIN';
+            }
+
+            #-----------------------------------------------
+            # known CSI sequence
+            #-----------------------------------------------
+            if( exists($g_keymap{$seq}) ) {
+
+                return $seq;
             }
 
             #-----------------------------------------------
@@ -812,27 +830,33 @@ sub paste_read {
     my ($max_byte, $total_timeout, $io_timeout) = @_;
 
     my $start_time = time();
-    my $recv_size  = 0;
+
+    my $recv_size = 0;
+
+    my $overflow = 0;
 
     while(1) {
 
         #---------------------------------------------------
-        # 全体timeoutチェック
+        # total timeout check
         #---------------------------------------------------
         if( (time() - $start_time) >= $total_timeout ) {
 
             warn "paste_read(): total timeout\n";
+
             return undef;
         }
 
         #---------------------------------------------------
-        # 入力待ち（可変タイムアウト）
+        # wait input
         #---------------------------------------------------
         if( !_has_os_input($io_timeout) ) {
+
             next;
         }
 
         my $buf = '';
+
         my $ret = sysread(STDIN, $buf, 1);
 
         #---------------------------------------------------
@@ -841,27 +865,38 @@ sub paste_read {
         if( !defined($ret) || $ret <= 0 ) {
 
             warn "paste_read(): sysread failed\n";
+
             return undef;
         }
 
-        $g_paste_buffer .= $buf;
         $recv_size += length($buf);
 
         #---------------------------------------------------
-        # サイズチェック（累積ベース）
+        # append paste data
+        #
+        # overflow後は蓄積せず、
+        # PASTE_END検出まで読み捨て継続
         #---------------------------------------------------
-        if( length($g_paste_buffer) > $max_byte ) {
+        if( !$overflow ) {
 
-            warn sprintf(
-                "paste_read(): size over (%d byte)\n",
-                $max_byte
-            );
+            $g_paste_buffer .= $buf;
 
-            return undef;
+            #-----------------------------------------------
+            # size check
+            #-----------------------------------------------
+            if( length($g_paste_buffer) > $max_byte ) {
+
+                warn sprintf(
+                    "paste_read(): size over (%d byte)\n",
+                    $max_byte
+                );
+
+                $overflow = 1;
+            }
         }
 
         #===================================================
-        # 終了シーケンス検出
+        # PASTE_END check
         #===================================================
         if( length($g_paste_buffer) >= length($PASTE_END) ) {
 
@@ -873,7 +908,7 @@ sub paste_read {
             if( $suffix eq $PASTE_END ) {
 
                 #-------------------------------------------
-                # 終了タグ除去
+                # remove PASTE_END
                 #-------------------------------------------
                 substr(
                     $g_paste_buffer,
@@ -881,6 +916,14 @@ sub paste_read {
                 ) = '';
 
                 $recv_size -= length($PASTE_END);
+
+                #-------------------------------------------
+                # overflow detected
+                #-------------------------------------------
+                if( $overflow ) {
+
+                    return undef;
+                }
 
                 return $recv_size;
             }
@@ -930,40 +973,88 @@ sub utf8_read {
     my $need = 0;
 
     #---------------------------------------------------
-    # UTF-8 byte数判定
+    # invalid:
+    # continuation byte
+    # 0x80 - 0xBF
     #---------------------------------------------------
-    if( ($o & 0xE0) == 0xC0 ) {
-        $need = 1;   # 2byte文字
+    if( $o >= 0x80 && $o <= 0xBF ) {
+
+        warn "utf8_read(): invalid top byte\n";
+
+        return undef;
     }
-    elsif( ($o & 0xF0) == 0xE0 ) {
-        $need = 2;   # 3byte文字
+
+    #---------------------------------------------------
+    # 2byte UTF-8
+    # 0xC2 - 0xDF
+    #
+    # 0xC0 / 0xC1 are invalid
+    #---------------------------------------------------
+    elsif( $o >= 0xC2 && $o <= 0xDF ) {
+
+        $need = 1;
     }
-    elsif( ($o & 0xF8) == 0xF0 ) {
-        $need = 3;   # 4byte文字
+
+    #---------------------------------------------------
+    # 3byte UTF-8
+    # 0xE0 - 0xEF
+    #---------------------------------------------------
+    elsif( $o >= 0xE0 && $o <= 0xEF ) {
+
+        $need = 2;
     }
+
+    #---------------------------------------------------
+    # 4byte UTF-8
+    # 0xF0 - 0xF4
+    #
+    # 0xF5 - 0xFF are invalid
+    #---------------------------------------------------
+    elsif( $o >= 0xF0 && $o <= 0xF4 ) {
+
+        $need = 3;
+    }
+
     else {
 
-        # 不正 or ASCII扱い
-        return $first_byte;
+        warn "utf8_read(): invalid utf8 first byte\n";
+
+        return undef;
     }
 
     #---------------------------------------------------
-    # continuation byte取得
+    # continuation byte read
     #---------------------------------------------------
     for( 1 .. $need ) {
 
         if( !_has_os_input($io_timeout) ) {
 
             warn "utf8_read(): timeout\n";
+
             return undef;
         }
 
         my $buf = '';
+
         my $ret = sysread(STDIN, $buf, 1);
 
         if( !defined($ret) || $ret <= 0 ) {
 
             warn "utf8_read(): sysread failed\n";
+
+            return undef;
+        }
+
+        my $co = ord($buf);
+
+        #-------------------------------------------------
+        # continuation byte check
+        # 10xxxxxx
+        #-------------------------------------------------
+        if( ($co & 0xC0) != 0x80 ) {
+
+            warn "utf8_read(): invalid continuation byte\n";
+
             return undef;
         }
 
