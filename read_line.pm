@@ -791,29 +791,9 @@ sub ss3_read {
 #===========================================================
 # paste_read()
 #
-# 説明:
-#   Bracketed Paste のpasteデータを取得する。
-#
-# 開始条件:
-#   ESC [200~ を既に受信済みであること。
-#
-# 処理内容:
-#   ESC [201~ が出現するまでSTDINからデータを読み込み、
-#   $g_paste_buffer に蓄積する。
-#
-#   終了シーケンスはバッファに含めない。
-#
-# timeout仕様:
-#   ・total_timeout : paste全体の最大待ち時間
-#   ・io_timeout    : 1回の入力待ちタイムアウト
-#
-# max_byte:
-#   ・$g_paste_buffer + 今回追加分 の合計サイズで制限
+# Bracketed Pasteデータ読み込み
 #
 # 引数:
-#   $max_byte
-#       paste全体最大byte数
-#
 #   $total_timeout
 #       全体タイムアウト(sec)
 #
@@ -822,18 +802,25 @@ sub ss3_read {
 #       例: 0.01〜0.5
 #
 # return:
-#   undef : timeout / error / size over
-#   number: 今回追加したbyte数
+#   success : 今回取得したpaste byte数
+#   failed  : undef
+#
+# note:
+#   ・pasteデータは $g_paste_buffer に蓄積される
+#   ・PASTE_END はbufferに含めない
+#   ・異常時は paste_cancel() によりrollbackされる
 #===========================================================
 sub paste_read {
 
-    my ($max_byte, $total_timeout, $io_timeout) = @_;
+    my ($total_timeout, $io_timeout) = @_;
 
     my $start_time = time();
 
-    my $recv_size = 0;
+    my $old_len = length($g_paste_buffer);
 
-    my $overflow = 0;
+    my $tail_buffer = '';
+
+    my $recv_size = 0;
 
     while(1) {
 
@@ -843,6 +830,8 @@ sub paste_read {
         if( (time() - $start_time) >= $total_timeout ) {
 
             warn "paste_read(): total timeout\n";
+
+            paste_cancel( $old_len, $tail_buffer, $io_timeout );
 
             return undef;
         }
@@ -866,67 +855,136 @@ sub paste_read {
 
             warn "paste_read(): sysread failed\n";
 
+            paste_cancel( $old_len, $tail_buffer, $io_timeout );
+
             return undef;
         }
+
+        #---------------------------------------------------
+        # append paste buffer
+        #---------------------------------------------------
+        $g_paste_buffer .= $buf;
 
         $recv_size += length($buf);
 
         #---------------------------------------------------
-        # append paste data
-        #
-        # overflow後は蓄積せず、
-        # PASTE_END検出まで読み捨て継続
+        # update tail buffer
         #---------------------------------------------------
-        if( !$overflow ) {
+        $tail_buffer .= $buf;
 
-            $g_paste_buffer .= $buf;
-
-            #-----------------------------------------------
-            # size check
-            #-----------------------------------------------
-            if( length($g_paste_buffer) > $max_byte ) {
-
-                warn sprintf(
-                    "paste_read(): size over (%d byte)\n",
-                    $max_byte
-                );
-
-                $overflow = 1;
-            }
+        if(
+            length($tail_buffer)
+            > length($PASTE_END)
+        ) {
+            $tail_buffer = substr(
+                $tail_buffer,
+                -length($PASTE_END)
+            );
         }
 
         #===================================================
         # PASTE_END check
         #===================================================
-        if( length($g_paste_buffer) >= length($PASTE_END) ) {
+        if( $tail_buffer eq $PASTE_END ) {
 
-            my $suffix = substr(
+            #-----------------------------------------------
+            # remove PASTE_END
+            #-----------------------------------------------
+            substr(
                 $g_paste_buffer,
                 -length($PASTE_END)
+            ) = '';
+
+            $recv_size -= length($PASTE_END);
+
+            return $recv_size;
+        }
+    }
+}
+
+#===========================================================
+# paste_cancel()
+#
+# Bracketed Paste異常終了時の復旧処理
+#
+# 処理内容:
+#   1. paste buffer rollback
+#   2. PASTE_ENDまでstdinを読み捨て
+#   3. 入力stream同期を回復
+#
+# args:
+#   $old_len       : rollback位置
+#   $tail_buffer   : PASTE_END途中一致状態
+#   $total_timeout : 全体timeout(sec)
+#
+# return:
+#   success : 1
+#   failed  : undef
+#
+# note:
+#   ・PASTE_END検出まで読み捨て継続
+#   ・timeout時は同期回復失敗
+#===========================================================
+
+sub paste_cancel {
+
+    my ($old_len, $tail_buffer, $total_timeout) = @_;
+
+    my $start_time = time();
+
+    #-------------------------------------------------------
+    # rollback paste buffer
+    #-------------------------------------------------------
+    substr($g_paste_buffer, $old_len) = '';
+
+    while(1) {
+
+        #---------------------------------------------------
+        # total timeout
+        #---------------------------------------------------
+        if( (time() - $start_time) >= $total_timeout ) {
+
+            warn "paste_cancel(): total timeout\n";
+
+            return undef;
+        }
+
+        my $buf = '';
+
+        my $ret = sysread(STDIN, $buf, 1);
+
+        #---------------------------------------------------
+        # read error
+        #---------------------------------------------------
+        if( !defined($ret) || $ret <= 0 ) {
+
+            warn "paste_cancel(): sysread failed\n";
+
+            return undef;
+        }
+
+        #---------------------------------------------------
+        # update tail buffer
+        #---------------------------------------------------
+        $tail_buffer .= $buf;
+
+        # tail buffer size limit
+        if(
+            length($tail_buffer)
+            > length($PASTE_END)
+        ) {
+            $tail_buffer = substr(
+                $tail_buffer,
+                -length($PASTE_END)
             );
+        }
 
-            if( $suffix eq $PASTE_END ) {
+        #===================================================
+        # PASTE_END check
+        #===================================================
+        if( $tail_buffer eq $PASTE_END ) {
 
-                #-------------------------------------------
-                # remove PASTE_END
-                #-------------------------------------------
-                substr(
-                    $g_paste_buffer,
-                    -length($PASTE_END)
-                ) = '';
-
-                $recv_size -= length($PASTE_END);
-
-                #-------------------------------------------
-                # overflow detected
-                #-------------------------------------------
-                if( $overflow ) {
-
-                    return undef;
-                }
-
-                return $recv_size;
-            }
+            return 1;
         }
     }
 }
