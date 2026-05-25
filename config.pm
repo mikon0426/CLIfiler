@@ -399,34 +399,128 @@ sub push_value {
     }
 }
 
-#--------------------------------------------------
-# push_history_value（History専用）
+#===========================================================
+# push_history_value()
 #
-# 引数:
-#   $dir    : ディレクトリ（重複キー）
-#   $loc    : カーソル位置
-#   $offset : カーソルオフセット
+# Historyセクション専用push関数
+#
+# Historyデータ形式:
+#   dir|loc|offset
+#
+# 重複判定:
+#   dirのみで判定する
 #
 # 動作:
-#   - dir単位で重複排除
-#   - "dir|loc|offset"として保存
-#   - maxはHistory設定を使用
+#   ・同一dirが既に存在する場合:
+#       古いHistoryを削除
+#       最新loc/offsetで上書き
+#       先頭へ再追加
 #
-# 注意:
-#   - History専用ロジック
-#   - フォーマットはここでのみ管理
-#--------------------------------------------------
+#   ・異なるdirの場合:
+#       新規Historyとして先頭追加
+#
+# note:
+#   ・push_value() は使用しない
+#   ・History専用ロジックをここへ閉じ込める
+#   ・History以外へ影響を与えない
+#===========================================================
 sub push_history_value {
+
     my ($self, $dir, $loc, $offset) = @_;
 
-    if (!defined $dir || $dir eq '') {
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if( !defined($dir) || $dir eq '' ) {
         return;
     }
 
-    my $value = join('|', $dir, $loc, $offset);
-    my $key   = $dir;
+    my $value = join(
+        '|',
+        $dir,
+        $loc,
+        $offset
+    );
 
-    $self->push_value('History', $value, $key);
+    my @list;
+
+    #-------------------------------------------------------
+    # load current history
+    #-------------------------------------------------------
+    if( $self->exists_section('History') ) {
+
+        @list = sort {
+
+            if(
+                $a =~ /^(\d+)$/
+                &&
+                $b =~ /^(\d+)$/
+            ) {
+                $a <=> $b;
+            }
+            else {
+                $a cmp $b;
+            }
+
+        } keys %{ $self->{config}{History} };
+
+        @list = map {
+            $self->{config}{History}{$_}
+        } @list;
+    }
+
+    #-------------------------------------------------------
+    # remove duplicate (dir only)
+    #-------------------------------------------------------
+    @list = grep {
+
+        my $old_value = $_;
+
+        my ($old_dir) = split(
+            /\|/,
+            $old_value,
+            2
+        );
+
+        $old_dir ne $dir;
+
+    } @list;
+
+    #-------------------------------------------------------
+    # push latest history
+    #-------------------------------------------------------
+    unshift @list, $value;
+
+    #-------------------------------------------------------
+    # max limit
+    #-------------------------------------------------------
+    my $max = $self->{max}{History};
+
+    if(
+        defined($max)
+        &&
+        $max > 0
+        &&
+        @list > $max
+    ) {
+        @list = @list[0 .. $max - 1];
+    }
+
+    #-------------------------------------------------------
+    # rebuild section
+    #-------------------------------------------------------
+    $self->clear_section('History');
+
+    my $i = 0;
+
+    for my $v (@list) {
+
+        $self->set(
+            'History',
+            $i++,
+            $v
+        );
+    }
 }
 
 1;
