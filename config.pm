@@ -3,210 +3,398 @@ package Config;
 use strict;
 use warnings;
 
-#--------------------------------------------------
-# 有効セクション定義（クラス共通）
-#
-# 説明:
-#   許可するセクションを固定定義することで、
-#   不正な設定の混入を防ぐ。
-#   load()時のフォーマットチェックにも使用。
-#--------------------------------------------------
-our %g_valid_section = map { $_ => 1 } qw(
-    Cursor Favorite DiffTarget SaveDir History
-);
 
-#--------------------------------------------------
-# new
-# 引数: ($file_path)
-#   $file_path : 設定ファイルパス
+
+#===========================================================
+# new()
 #
-# 戻り値:
-#   Configオブジェクト
+# constructor
 #
-# 説明:
-#   設定ファイル単位でインスタンスを生成する。
-#   config / state を別ファイルにしたい場合も
-#   同一クラスで扱えるようにするための設計。
+# usage:
 #
-# メンバ:
-#   file   : 対象ファイルパス
-#   config : 実際の設定データ（ハッシュ）
-#   max    : セクションごとの最大件数制限
-#--------------------------------------------------
+#   my $cfg = Config->new(
+#       'user.conf',
+#       'History',
+#       'Cursor',
+#       'Bookmark',
+#   );
+#
+# note:
+#   ・第1引数:
+#       config file path
+#
+#   ・第2引数以降:
+#       valid section list
+#
+#   ・valid sectionはインスタンス毎に保持する
+#
+#   ・section定義をglobal固定化しないことで、
+#       user.conf / action.conf 等へ柔軟対応する
+#===========================================================
 sub new {
-    my ($class, $file) = @_;
+
+    my ($class, $path, @sections) = @_;
+
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if( !defined($path) || $path eq '' ) {
+
+        die "Config::new(): invalid path\n";
+    }
 
     my $self = {
-        file   => $file,
+
+        #---------------------------------------------------
+        # config file path
+        #---------------------------------------------------
+        path => $path,
+
+        #---------------------------------------------------
+        # config data
+        #---------------------------------------------------
         config => {},
 
-        # セクションごとの最大件数（主にHistory用）
-        max => {
-            History => 20,   # デフォルト値
-        },
-    };
+        #---------------------------------------------------
+        # max count per section
+        #---------------------------------------------------
+        max => {},
 
-    return bless $self, $class;
+        #---------------------------------------------------
+        # valid section table
+        #---------------------------------------------------
+        valid_section => {},
+
+    };
+    
+    $self->{max}{History}  = 100;
+    $self->{max}{Favorite} = 300;
+
+    bless $self, $class;
+
+    #-------------------------------------------------------
+    # build valid section table
+    #-------------------------------------------------------
+    for my $section (@sections) {
+
+        next if(
+            !defined($section)
+            ||
+            $section eq ''
+        );
+
+        $self->{valid_section}{$section} = 1;
+    }
+
+    return $self;
 }
 
-#--------------------------------------------------
-# set_max
-# 引数: ($section, $max)
-#   $section : セクション名
-#   $max     : 最大件数
+
+#===========================================================
+# set_array_max()
 #
-# 説明:
-#   push_value()で使用する最大件数を設定する。
-#   セクションごとに個別に設定可能。
-#--------------------------------------------------
-sub set_max {
+# 配列型セクションの最大保持数を設定する
+#
+# usage:
+#
+#   $cfg->set_array_max('History', 100);
+#
+# note:
+#   ・配列型セクション専用
+#
+#   ・push_value(), push_history_value() 等で
+#       max数を超えた場合、
+#       古い要素を自動削除する
+#
+#   ・0以下を指定した場合は
+#       無制限扱い
+#
+#===========================================================
+sub set_array_max {
+
     my ($self, $section, $max) = @_;
 
-    if (!exists $g_valid_section{$section}) {
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
         return;
     }
 
-    if (!defined $max || $max <= 0) {
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
         return;
     }
 
-    $self->{max}{$section} = $max;
+    #-------------------------------------------------------
+    # undefined -> unlimited
+    #-------------------------------------------------------
+    if( !defined($max) ) {
+
+        $max = 0;
+    }
+
+    #-------------------------------------------------------
+    # negative value -> unlimited
+    #-------------------------------------------------------
+    if( $max < 0 ) {
+
+        $max = 0;
+    }
+
+    #-------------------------------------------------------
+    # set max
+    #-------------------------------------------------------
+    $self->{max}{$section} = int($max);
 }
 
-#--------------------------------------------------
-# load
-# 引数: なし（内部file使用）
+
+#===========================================================
+# load()
 #
-# 戻り値:
-#   0  : 正常
-#  -1  : フォーマットエラー
-#  -2  : ファイルopen失敗
+# config file を読み込む
 #
-# 説明:
-#   INI形式のファイルを読み込み、内部ハッシュへ格納する。
+# return:
+#   1 : success
+#   0 : open error / invalid path
 #
-# フォーマット制約:
-#   - セクションは必須
-#   - key=value形式のみ許可
-#   - 不正行があれば即エラー終了
+# note:
+#   ・constructorで指定された section のみ読み込む
 #
-# 注意:
-#   - 不正なセクションは即エラー
-#   - 途中エラー時はcloseして戻る
-#--------------------------------------------------
+#   ・未知の section は無視する
+#
+#   ・config file が存在しない場合は
+#       空configとして成功扱い
+#
+#   ・load後、配列型sectionは
+#       normalize_array_section() を実行する
+#
+#===========================================================
 sub load {
+
     my ($self) = @_;
 
-    $self->{config} = {};
+    my $path = $self->{path};
 
-    my $file = $self->{file};
+    if(
+        !defined($path)
+        ||
+        $path eq ''
+    ) {
 
-    if (!-f $file) {
-        return 0;  # 初回起動想定
+        return 0;
     }
 
-    open(my $fh, '<', $file) or return -2;
+    if( !-f $path ) {
 
-    my $section = '';
+        return 1;
+    }
 
-    while (my $line = <$fh>) {
-        chomp $line;
+    if( !open(my $fh, '<:utf8', $path) ) {
 
-        # 前後空白除去
-        $line =~ s/^\s+|\s+$//g;
+        return 0;
+    }
 
-        # 空行・コメントはスキップ
-        if ($line eq '' || $line =~ /^#/) {
+    my $section = undef;
+
+    while( my $line = <$fh> ) {
+
+        chomp($line);
+
+        $line =~ s/\r$//;
+
+        #---------------------------------------------------
+        # skip empty line
+        #---------------------------------------------------
+        if( $line =~ /^\s*$/ ) {
+
             next;
         }
 
-        #------------------------------
-        # セクション解析
-        #------------------------------
-        if ($line =~ /^\[(.+?)\]$/) {
-            my $sec = $1;
+        #---------------------------------------------------
+        # comment
+        #---------------------------------------------------
+        if( $line =~ /^\s*[#;]/ ) {
 
-            # 許可されていないセクションはエラー
-            if (!exists $g_valid_section{$sec}) {
-                close($fh);
-                return -1;
-            }
-
-            $section = $sec;
             next;
         }
 
-        #------------------------------
-        # key=value解析
-        #------------------------------
-        if ($line =~ /^([^=\s]+)\s*=(.*)$/) {
+        #---------------------------------------------------
+        # section
+        #---------------------------------------------------
+        if( $line =~ /^\[(.+?)\]$/ ) {
 
-            # セクション未定義状態はエラー
-            if ($section eq '') {
-                close($fh);
-                return -1;
+            my $name = $1;
+
+            if(
+                exists($self->{valid_section}{$name})
+            ) {
+
+                $section = $name;
+            }
+            else {
+
+                $section = undef;
             }
 
-            my ($key, $val) = ($1, $2);
-
-            # key,vel はスペースを取り除く
-            $key =~ s/^\s+|\s+$//g;
-            $val =~ s/^\s+|\s+$//g;
-
-            # 内部へ格納
-            $self->set($section, $key, $val);
+            next;
         }
-        else {
-            # 不正フォーマット
-            close($fh);
-            return -1;
+
+        #---------------------------------------------------
+        # key=value
+        #---------------------------------------------------
+        if(
+            defined($section)
+            &&
+            $line =~ /^(.*?)=(.*)$/
+        ) {
+
+            my $key   = $1;
+            my $value = $2;
+
+            $key =~ s/^\s+//;
+            $key =~ s/\s+$//;
+
+            $self->{config}{$section}{$key} = $value;
         }
     }
 
     close($fh);
-    return 0;
+
+    #-------------------------------------------------------
+    # normalize array sections
+    #-------------------------------------------------------
+    for my $section (keys %{ $self->{max} }) {
+
+        next if(
+            !defined($self->{max}{$section})
+            ||
+            $self->{max}{$section} <= 0
+        );
+
+        $self->normalize_array_section($section);
+    }
+
+    return 1;
 }
 
-#--------------------------------------------------
-# save
-# 引数: なし（内部file使用）
+
+#===========================================================
+# save()
 #
-# 戻り値:
-#   1 : 成功
-#   0 : 失敗
+# config file を保存する
 #
-# 説明:
-#   内部データをINI形式でファイルに保存する。
+# return:
+#   1 : success
+#   0 : open error / write error / invalid path
 #
-# 特徴:
-#   - 一旦 tmp ファイルへ書き出し
-#   - rename で置き換え（安全性確保）
+# note:
+#   ・現在の内部状態から
+#       config file を完全再生成する
 #
-# 注意:
-#   - セクションは固定順で出力
-#   - 存在しないセクションも空で出力
-#--------------------------------------------------
+#   ・constructorで指定された
+#       valid section のみ保存する
+#
+#   ・存在しない section は保存しない
+#
+#   ・配列型sectionは
+#       key を数値sortして保存する
+#
+#===========================================================
 sub save {
+
     my ($self) = @_;
 
-    my $file = $self->{file};
+    my $path = $self->{path};
 
-    if (!$file) {
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($path)
+        ||
+        $path eq ''
+    ) {
+
         return 0;
     }
 
-    my $tmp = "$file.tmp";
+    #-------------------------------------------------------
+    # open
+    #-------------------------------------------------------
+    if(
+        !open(
+            my $fh,
+            '>:encoding(UTF-8)',
+            $path
+        )
+    ) {
 
-    open(my $fh, '>', $tmp) or return 0;
+        return 0;
+    }
 
-    for my $section (qw(Cursor Favorite DiffTarget SaveDir History)) {
+    #-------------------------------------------------------
+    # save section
+    #-------------------------------------------------------
+    for my $section (sort keys %{ $self->{valid_section} }) {
+
+        #---------------------------------------------------
+        # skip empty section
+        #---------------------------------------------------
+        if(
+            !exists($self->{config}{$section})
+            ||
+            ref($self->{config}{$section}) ne 'HASH'
+            ||
+            !keys %{ $self->{config}{$section} }
+        ) {
+
+            next;
+        }
 
         print $fh "[$section]\n";
 
-        if ($self->exists_section($section)) {
-            for my $key (sort keys %{ $self->{config}{$section} }) {
-                print $fh "$key=$self->{config}{$section}{$key}\n";
+        #---------------------------------------------------
+        # sort keys
+        #---------------------------------------------------
+        my @keys = sort {
+
+            if(
+                $a =~ /^(\d+)$/
+                &&
+                $b =~ /^(\d+)$/
+            ) {
+
+                $a <=> $b;
             }
+            else {
+
+                $a cmp $b;
+            }
+
+        } keys %{ $self->{config}{$section} };
+
+        #---------------------------------------------------
+        # save key=value
+        #---------------------------------------------------
+        for my $key (@keys) {
+
+            my $value =
+                $self->{config}{$section}{$key};
+
+            next if( !defined($value) );
+
+            print $fh "$key=$value\n";
         }
 
         print $fh "\n";
@@ -214,14 +402,9 @@ sub save {
 
     close($fh);
 
-    # 安全な置き換え
-    if (!rename($tmp, $file)) {
-        unlink($tmp);
-        return 0;
-    }
-
     return 1;
 }
+
 
 #--------------------------------------------------
 # get
@@ -244,23 +427,165 @@ sub get {
     return $default;
 }
 
+
 #--------------------------------------------------
 # set
 # 引数: ($section, $key, $value)
 #
 # 説明:
 #   指定キーに値を設定する。
-#   無効なセクションは無視する。
+#
+#   constructor で登録された
+#   valid section のみ設定可能。
+#
+#   無効な section は無視する。
 #--------------------------------------------------
 sub set {
+
     my ($self, $section, $key, $value) = @_;
 
-    if (!exists $g_valid_section{$section}) {
+    #----------------------------------------------
+    # validation
+    #----------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
         return;
     }
 
+    if( !defined($key) ) {
+
+        return;
+    }
+
+    #----------------------------------------------
+    # valid section check
+    #----------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return;
+    }
+
+    #----------------------------------------------
+    # set value
+    #----------------------------------------------
     $self->{config}{$section}{$key} = $value;
 }
+
+
+#===========================================================
+# dump()
+#
+# 引数:
+#   ($section, $key)
+#
+# 説明:
+#   config内容を標準出力へdumpする。
+#
+# usage:
+#
+#   dump()
+#       全section / 全key表示
+#
+#   dump($section)
+#       指定sectionの全key表示
+#
+#   dump($section, $key)
+#       指定section + 指定keyのみ表示
+#
+# note:
+#   ・存在しない section / key は無視する
+#
+#   ・配列型sectionは key を数値sortして表示する
+#
+#===========================================================
+sub dump {
+
+    my ($self, $target_section, $target_key) = @_;
+
+    #-------------------------------------------------------
+    # section list
+    #-------------------------------------------------------
+    my @sections;
+
+    if( defined($target_section) ) {
+
+        if(
+            !exists(
+                $self->{config}{$target_section}
+            )
+        ) {
+
+            return;
+        }
+
+        @sections = ($target_section);
+    }
+    else {
+
+        @sections = sort keys %{ $self->{config} };
+    }
+
+    #-------------------------------------------------------
+    # dump section
+    #-------------------------------------------------------
+    for my $section (@sections) {
+
+        print "[$section]\n";
+
+        #---------------------------------------------------
+        # sort keys
+        #---------------------------------------------------
+        my @keys = sort {
+
+            if(
+                $a =~ /^(\d+)$/
+                &&
+                $b =~ /^(\d+)$/
+            ) {
+
+                $a <=> $b;
+            }
+            else {
+
+                $a cmp $b;
+            }
+
+        } keys %{ $self->{config}{$section} };
+
+        #---------------------------------------------------
+        # key filter
+        #---------------------------------------------------
+        if( defined($target_key) ) {
+
+            @keys = grep {
+                $_ eq $target_key
+            } @keys;
+        }
+
+        #---------------------------------------------------
+        # dump key=value
+        #---------------------------------------------------
+        for my $key (@keys) {
+
+            my $value =
+                $self->{config}{$section}{$key};
+
+            $value = ''
+                if( !defined($value) );
+
+            print "$key=$value\n";
+        }
+
+        print "\n";
+    }
+}
+
 
 #--------------------------------------------------
 # exists_key
@@ -287,154 +612,483 @@ sub exists_key {
     return 0;
 }
 
-#--------------------------------------------------
-# exists_section
-# 引数: ($section)
-#
-# 戻り値:
-#   1 : 存在
-#   0 : 非存在
-#
-# 説明:
-#   セクションの存在チェック
-#--------------------------------------------------
-sub exists_section {
-    my ($self, $section) = @_;
 
-    if (exists $self->{config}{$section}) {
-        return 1;
-    }
-
-    return 0;
-}
-
-#--------------------------------------------------
-# clear_section
-# 引数: ($section)
-#
-# 説明:
-#   セクションを丸ごと削除する
-#--------------------------------------------------
-sub clear_section {
-    my ($self, $section) = @_;
-
-    delete $self->{config}{$section};
-}
-
-#--------------------------------------------------
-# push_value（汎用版）
+#===========================================================
+# clear_section_keys()
 #
 # 引数:
-#   $section : セクション名
-#   $value   : 登録する値
-#   $key     : 重複判定用キー（省略可）
+#   ($section)
 #
-# 動作:
-#   - keyベースで重複除去
-#   - 先頭に追加（最新優先）
-#   - max件数でトリム
+# 説明:
+#   指定sectionに所属する
+#   全key/valueを削除する。
 #
-# 注意:
-#   - フォーマット解析は一切行わない
-#   - keyの意味は呼び出し側責任
-#--------------------------------------------------
+# note:
+#   ・section自体は削除しない
+#
+#   ・存在しない section は無視する
+#
+#   ・invalid section は無視する
+#
+# usage:
+#
+#   clear_section_keys(
+#       'FileAction'
+#   );
+#
+#===========================================================
+sub clear_section_keys {
+
+    my ($self, $section) = @_;
+
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # section not exists
+    #-------------------------------------------------------
+    if(
+        !exists($self->{config}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # clear keys
+    #-------------------------------------------------------
+    $self->{config}{$section} = {};
+}
+
+
+#===========================================================
+# normalize_array_section()
+#
+# 引数:
+#   ($section)
+#
+# 説明:
+#   配列型sectionのkeyを
+#   0,1,2,3... へ正規化する。
+#
+#   user編集などにより、
+#
+#       0
+#       1
+#       3
+#       7
+#
+#   のように壊れたindexを
+#   自動補正する。
+#
+# note:
+#   ・値の並び順は維持する
+#
+#   ・数値keyは数値sortされる
+#
+#   ・section自体は削除しない
+#
+#   ・存在しない section は無視する
+#
+# usage:
+#
+#   normalize_array_section(
+#       'History'
+#   );
+#
+#===========================================================
+sub normalize_array_section {
+
+    my ($self, $section) = @_;
+
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # section not exists
+    #-------------------------------------------------------
+    if(
+        !exists($self->{config}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # sort keys
+    #-------------------------------------------------------
+    my @keys = sort {
+
+        if(
+            $a =~ /^(\d+)$/
+            &&
+            $b =~ /^(\d+)$/
+        ) {
+
+            $a <=> $b;
+        }
+        else {
+
+            $a cmp $b;
+        }
+
+    } keys %{ $self->{config}{$section} };
+
+    #-------------------------------------------------------
+    # extract values
+    #-------------------------------------------------------
+    my @values = map {
+        $self->{config}{$section}{$_}
+    } @keys;
+
+    #-------------------------------------------------------
+    # rebuild section
+    #-------------------------------------------------------
+    $self->{config}{$section} = {};
+
+    my $i = 0;
+
+    for my $value (@values) {
+
+        $self->{config}{$section}{$i++}
+            = $value;
+    }
+}
+
+
+#===========================================================
+# get_size()
+#
+# 引数:
+#   ($section)
+#
+# 戻り値:
+#   要素数
+#
+# 説明:
+#   配列型sectionの要素数を取得する。
+#
+# note:
+#   ・存在しない section は 0 を返す
+#
+#   ・empty section は 0 を返す
+#
+#   ・normalize済みであることを前提とする
+#
+# usage:
+#
+#   my $size =
+#       $cfg->get_size('History');
+#
+#===========================================================
+sub get_size {
+
+    my ($self, $section) = @_;
+
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
+        return 0;
+    }
+
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return 0;
+    }
+
+    #-------------------------------------------------------
+    # section not exists
+    #-------------------------------------------------------
+    if(
+        !exists($self->{config}{$section})
+    ) {
+
+        return 0;
+    }
+
+    return scalar(
+        keys %{ $self->{config}{$section} }
+    );
+}
+
+
+#===========================================================
+# push_value()
+#
+# 引数:
+#   ($section, $value, $key)
+#
+# 説明:
+#   配列型sectionへ値を先頭追加する。
+#
+#   既存データに同一keyが存在する場合は
+#   古い要素を削除してから先頭追加する。
+#
+# usage:
+#
+#   push_value(
+#       'Favorite',
+#       '/tmp/a.txt'
+#   );
+#
+#   push_value(
+#       'Favorite',
+#       '/tmp/a.txt',
+#       '/tmp/a.txt'
+#   );
+#
+# note:
+#   ・$key省略時は
+#       $value を key として使用する
+#
+#   ・重複判定は key ベース
+#
+#   ・max設定されている場合、
+#       超過分は末尾から削除する
+#
+#   ・History専用ロジックは含まない
+#
+#===========================================================
 sub push_value {
+
     my ($self, $section, $value, $key) = @_;
 
-    if (!exists $g_valid_section{$section}) {
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        ||
+        $section eq ''
+    ) {
+
         return;
     }
 
-    if (!defined $value || $value eq '') {
+    if(
+        !defined($value)
+        ||
+        $value eq ''
+    ) {
+
         return;
     }
 
-    # key省略時はvalueをキー扱い
-    if (!defined $key) {
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # key省略時は value を使用
+    #-------------------------------------------------------
+    if( !defined($key) ) {
+
         $key = $value;
     }
 
     my @list;
 
-    # 既存データ取得
-    if ($self->exists_section($section)) {
+    #-------------------------------------------------------
+    # existing values
+    #-------------------------------------------------------
+    if(
+        exists($self->{config}{$section})
+    ) {
 
-        @list = sort {
-            if ($a =~ /^(\d+)$/ && $b =~ /^(\d+)$/) {
+        my @keys = sort {
+
+            if(
+                $a =~ /^(\d+)$/
+                &&
+                $b =~ /^(\d+)$/
+            ) {
+
                 $a <=> $b;
-            } else {
+            }
+            else {
+
                 $a cmp $b;
             }
+
         } keys %{ $self->{config}{$section} };
 
-        @list = map { $self->{config}{$section}{$_} } @list;
+        @list = map {
+            $self->{config}{$section}{$_}
+        } @keys;
     }
 
-    #------------------------------
-    # 重複除去（keyベース）
-    #------------------------------
+    #-------------------------------------------------------
+    # remove duplicated key
+    #-------------------------------------------------------
     @list = grep {
+
         my $old_value = $_;
         my $old_key   = $old_value;
 
         $old_key ne $key;
+
     } @list;
 
-    # 先頭に追加
+    #-------------------------------------------------------
+    # push front
+    #-------------------------------------------------------
     unshift @list, $value;
 
-    # max制限
+    #-------------------------------------------------------
+    # max limit
+    #-------------------------------------------------------
     my $max = $self->{max}{$section};
 
-    if (defined $max && $max > 0 && @list > $max) {
+    if(
+        defined($max)
+        &&
+        $max > 0
+        &&
+        @list > $max
+    ) {
+
         @list = @list[0 .. $max - 1];
     }
 
-    # 再構築
-    $self->clear_section($section);
+    #-------------------------------------------------------
+    # rebuild section
+    #-------------------------------------------------------
+    $self->{config}{$section} = {};
 
     my $i = 0;
+
     for my $v (@list) {
-        $self->set($section, $i++, $v);
+
+        $self->{config}{$section}{$i++} = $v;
     }
 }
+
 
 #===========================================================
 # push_history_value()
 #
-# Historyセクション専用push関数
+# 引数:
+#   ($dir, $loc, $offset)
 #
-# Historyデータ形式:
-#   dir|loc|offset
+# 説明:
+#   History section 専用push処理。
 #
-# 重複判定:
-#   dirのみで判定する
+#   dir|loc|offset 形式の履歴データを
+#   History section の先頭へ追加する。
 #
-# 動作:
-#   ・同一dirが既に存在する場合:
-#       古いHistoryを削除
-#       最新loc/offsetで上書き
-#       先頭へ再追加
+#   同一dirが既に存在する場合は、
+#   古い要素を削除してから先頭追加する。
 #
-#   ・異なるdirの場合:
-#       新規Historyとして先頭追加
+# usage:
+#
+#   push_history_value(
+#       '/tmp',
+#       100,
+#       20
+#   );
 #
 # note:
-#   ・push_value() は使用しない
-#   ・History専用ロジックをここへ閉じ込める
-#   ・History以外へ影響を与えない
+#   ・History section 専用
+#
+#   ・重複判定は dir のみ
+#
+#   ・loc / offset は
+#       重複判定対象にしない
+#
+#   ・同一dirが存在した場合、
+#       loc / offset は新値で上書きされる
+#
+#   ・内部保存形式:
+#
+#       dir|loc|offset
+#
 #===========================================================
 sub push_history_value {
 
     my ($self, $dir, $loc, $offset) = @_;
 
+    my $section = 'History';
+
     #-------------------------------------------------------
     # validation
     #-------------------------------------------------------
-    if( !defined($dir) || $dir eq '' ) {
+    if(
+        !defined($dir)
+        ||
+        $dir eq ''
+    ) {
+
         return;
     }
 
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+
+        return;
+    }
+
+    #-------------------------------------------------------
+    # build value
+    #-------------------------------------------------------
     my $value = join(
         '|',
         $dir,
@@ -445,41 +1099,49 @@ sub push_history_value {
     my @list;
 
     #-------------------------------------------------------
-    # load current history
+    # existing values
     #-------------------------------------------------------
-    if( $self->exists_section('History') ) {
+    if(
+        exists($self->{config}{$section})
+    ) {
 
-        @list = sort {
+        my @keys = sort {
 
             if(
                 $a =~ /^(\d+)$/
                 &&
                 $b =~ /^(\d+)$/
             ) {
+
                 $a <=> $b;
             }
             else {
+
                 $a cmp $b;
             }
 
-        } keys %{ $self->{config}{History} };
+        } keys %{ $self->{config}{$section} };
 
         @list = map {
-            $self->{config}{History}{$_}
-        } @list;
+            $self->{config}{$section}{$_}
+        } @keys;
     }
 
     #-------------------------------------------------------
-    # remove duplicate (dir only)
+    # remove duplicated dir
     #-------------------------------------------------------
     @list = grep {
 
         my $old_value = $_;
 
-        my ($old_dir) = split(
+        my (
+            $old_dir,
+            $old_loc,
+            $old_offset
+        ) = split(
             /\|/,
             $old_value,
-            2
+            3
         );
 
         $old_dir ne $dir;
@@ -487,14 +1149,14 @@ sub push_history_value {
     } @list;
 
     #-------------------------------------------------------
-    # push latest history
+    # push front
     #-------------------------------------------------------
     unshift @list, $value;
 
     #-------------------------------------------------------
     # max limit
     #-------------------------------------------------------
-    my $max = $self->{max}{History};
+    my $max = $self->{max}{$section};
 
     if(
         defined($max)
@@ -503,24 +1165,22 @@ sub push_history_value {
         &&
         @list > $max
     ) {
+
         @list = @list[0 .. $max - 1];
     }
 
     #-------------------------------------------------------
     # rebuild section
     #-------------------------------------------------------
-    $self->clear_section('History');
+    $self->{config}{$section} = {};
 
     my $i = 0;
 
     for my $v (@list) {
 
-        $self->set(
-            'History',
-            $i++,
-            $v
-        );
+        $self->{config}{$section}{$i++} = $v;
     }
 }
+
 
 1;
