@@ -200,9 +200,10 @@ sub load {
         return 1;
     }
 
-    if( !open(my $fh, '<:utf8', $path) ) {
+    my $fh;
+    if( !open($fh, '<:utf8', $path) ) {
 
-        return 0;
+       return 0;
     }
 
     my $section = undef;
@@ -332,9 +333,10 @@ sub save {
     #-------------------------------------------------------
     # open
     #-------------------------------------------------------
+    my $fh;
     if(
         !open(
-            my $fh,
+            $fh,
             '>:encoding(UTF-8)',
             $path
         )
@@ -406,21 +408,65 @@ sub save {
 }
 
 
-#--------------------------------------------------
-# get
-# 引数: ($section, $key, $default)
+#===========================================================
+# get()
+#
+# 引数:
+#   ($section, $key, $default)
 #
 # 戻り値:
-#   値 or デフォルト値
+#   ・存在する場合: 値
+#   ・存在しない場合: $default
+#   ・section無効 / key無し: $default
 #
 # 説明:
-#   指定キーの値を取得する。
-#   存在しない場合は default を返す。
-#--------------------------------------------------
+#   指定section/keyの値を取得する。
+#   default指定方式（undefではなく呼び出し側指定値を返す）
+#
+# note:
+#   ・valid_section に登録されたsectionのみ対象
+#   ・未登録sectionは無視してdefault返却
+#===========================================================
 sub get {
+
     my ($self, $section, $key, $default) = @_;
 
-    if ($self->exists_key($section, $key)) {
+    #-------------------------------------------------------
+    # validation
+    #-------------------------------------------------------
+    if(
+        !defined($section)
+        || $section eq ''
+        || !defined($key)
+        || $key eq ''
+    ) {
+        return $default;
+    }
+
+    #-------------------------------------------------------
+    # valid section check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{valid_section}{$section})
+    ) {
+        return $default;
+    }
+
+    #-------------------------------------------------------
+    # section exists check
+    #-------------------------------------------------------
+    if(
+        !exists($self->{config}{$section})
+    ) {
+        return $default;
+    }
+
+    #-------------------------------------------------------
+    # key exists check
+    #-------------------------------------------------------
+    if(
+        exists($self->{config}{$section}{$key})
+    ) {
         return $self->{config}{$section}{$key};
     }
 
@@ -584,32 +630,6 @@ sub dump {
 
         print "\n";
     }
-}
-
-
-#--------------------------------------------------
-# exists_key
-# 引数: ($section, $key)
-#
-# 戻り値:
-#   1 : 存在
-#   0 : 非存在
-#
-# 説明:
-#   指定キーの存在チェックを行う。
-#--------------------------------------------------
-sub exists_key {
-    my ($self, $section, $key) = @_;
-
-    if (!$self->exists_section($section)) {
-        return 0;
-    }
-
-    if (exists $self->{config}{$section}{$key}) {
-        return 1;
-    }
-
-    return 0;
 }
 
 
