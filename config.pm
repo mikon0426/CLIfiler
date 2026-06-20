@@ -38,6 +38,7 @@ use warnings;
 #   section_order : セクション定義順配列
 #   valid_section : セクション存在チェック用ハッシュ
 #   values        : 通常値格納ハッシュ
+#   values_order  : 通常値保存順
 #   arrays        : 配列データ格納配列
 #   array_meta    : 配列制御情報（duplicate / max）
 #
@@ -89,6 +90,12 @@ sub new {
         values => {},
 
         #===================================================
+        # 通常値保存順
+        # section => [ key, key, ... ]
+        #===================================================
+        values_order => {},
+
+        #===================================================
         # 配列データ
         # section => [ value, value, ... ]
         # index 0 = oldest
@@ -111,14 +118,20 @@ sub new {
     # valid_section 初期化
     #---------------------------------------------------
     for my $sec (@{$self->{section_order}}) {
+
         $self->{valid_section}{$sec} = 1;
 
+        #-----------------------------------------------
         # 初期構造を必ず用意（重要）
-        $self->{values}{$sec}     = {};
-        $self->{arrays}{$sec}     = [];
+        #-----------------------------------------------
+        $self->{values}{$sec}       = {};
+        $self->{values_order}{$sec} = [];
+
+        $self->{arrays}{$sec}       = [];
+
         $self->{array_meta}{$sec} = {
-            duplicate => 0,   # デフォルト：重複禁止
-            max       => undef # デフォルト：無制限
+            duplicate => 0,     # デフォルト：重複禁止
+            max       => undef, # デフォルト：無制限
         };
     }
 
@@ -135,6 +148,8 @@ sub new {
 # ■仕様
 #   ・通常値専用（配列キーは使用不可）
 #   ・数値キーは禁止（配列と誤認されるため）
+#   ・新規キーは values_order に登録される
+#   ・既存キー更新時は順序を変更しない
 #
 # ■引数
 #   $section : セクション名
@@ -147,6 +162,7 @@ sub new {
 #
 # ■影響範囲
 #   $self->{values}{$section}{$key}
+#   $self->{values_order}{$section}
 #
 # ■注意
 #   ・配列データは push_value / set_array を使用すること
@@ -172,12 +188,30 @@ sub set {
     #---------------------------------------------------
     # 初期化保証
     #---------------------------------------------------
-    $self->{values}{$section} ||= {};
+    $self->{values}{$section}       ||= {};
+    $self->{values_order}{$section} ||= [];
+
+    #---------------------------------------------------
+    # 新規キー判定
+    #---------------------------------------------------
+    my $is_new_key =
+        !exists $self->{values}{$section}{$key};
 
     #---------------------------------------------------
     # 値設定
     #---------------------------------------------------
     $self->{values}{$section}{$key} = $value;
+
+    #---------------------------------------------------
+    # 保存順登録
+    #---------------------------------------------------
+    if ($is_new_key) {
+
+        push(
+            @{$self->{values_order}{$section}},
+            $key
+        );
+    }
 
     return 1;
 }
@@ -252,6 +286,9 @@ sub get {
 #   ・配列はそのまま読み込む（整形しない）
 #   ・duplicate違反は warning（読み込みは継続）
 #
+#   ・通常値の重複キーは後勝ち
+#   ・保存順は初回出現位置を維持する
+#
 # ■配列仕様
 #   ・インデックスは読み込み順で連番化する
 #   ・歯抜け配列は禁止（詰め直す）
@@ -272,7 +309,9 @@ sub load {
 
     my $current_section = undef;
 
+    #---------------------------------------------------
     # 配列一時バッファ
+    #---------------------------------------------------
     my %array_buffer;
 
     while (my $line = <$fh>) {
@@ -292,9 +331,20 @@ sub load {
 
             $current_section = $1;
 
+            #-------------------------------------------
             # セクション存在チェック
-            if (!exists $self->{valid_section}{$current_section}) {
-                warn "[load] unknown section: $current_section\n";
+            #-------------------------------------------
+            if (
+                !exists(
+                    $self->{valid_section}
+                    {$current_section}
+                )
+            ) {
+
+                warn
+                    "[load] unknown section: "
+                    . "$current_section\n";
+
                 $current_section = undef;
             }
 
@@ -304,7 +354,8 @@ sub load {
         #-----------------------------------------------
         # セクション未定義なら無視
         #-----------------------------------------------
-        next if !defined $current_section;
+        next
+            if !defined $current_section;
 
         #-----------------------------------------------
         # key=value
@@ -314,35 +365,68 @@ sub load {
             my $key   = $1;
             my $value = $2;
 
-            #===================================================
+            #===========================================
             # 数値キー → 配列扱い
-            #===================================================
+            #===========================================
             if ($key =~ /^\d+$/) {
 
-                push @{ $array_buffer{$current_section} }, $value;
+                push(
+                    @{$array_buffer{$current_section}},
+                    $value
+                );
             }
             else {
 
-                # 通常値
-                $self->{values}{$current_section}{$key} = $value;
+                #---------------------------------------
+                # 初回出現キー
+                #---------------------------------------
+                if (
+                    !exists(
+                        $self->{values}
+                        {$current_section}
+                        {$key}
+                    )
+                ) {
+
+                    push(
+                        @{$self->{values_order}
+                        {$current_section}},
+                        $key
+                    );
+                }
+
+                #---------------------------------------
+                # 通常値設定
+                # （重複キーは後勝ち）
+                #---------------------------------------
+                $self->{values}
+                    {$current_section}
+                    {$key}
+                    = $value;
             }
         }
     }
 
     close $fh;
 
-    #=======================================================
+    #===================================================
     # 配列確定処理
-    #=======================================================
+    #===================================================
     for my $sec (keys %array_buffer) {
 
-        next if !exists $self->{arrays}{$sec};
+        next
+            if !exists(
+                $self->{arrays}{$sec}
+            );
 
         my $idx = 0;
 
-        for my $val (@{ $array_buffer{$sec} }) {
+        for my $val (
+            @{ $array_buffer{$sec} }
+        ) {
 
-            $self->{arrays}{$sec}[$idx++] = $val;
+            $self->{arrays}{$sec}
+                [$idx++] = $val;
         }
     }
 
@@ -362,10 +446,12 @@ sub load {
 #   ・空セクションも必ず出力する
 #
 #   ・通常値 → 配列 の順で出力
+#   ・通常値は values_order 順で出力
 #   ・配列は index 順（0=old → last=new）
 #
 # ■注意
 #   ・duplicate / max は保存しない（メタ情報のみ保持）
+#   ・values_order と values の不整合は warn して継続
 #
 # ■引数
 #   $file : 出力ファイルパス
@@ -391,11 +477,36 @@ sub save {
         #===================================================
         # 通常値出力
         #===================================================
-        if (exists $self->{values}{$sec}) {
+        if (
+            exists $self->{values}{$sec}
+            &&
+            exists $self->{values_order}{$sec}
+        ) {
 
-            for my $key (keys %{ $self->{values}{$sec} }) {
+            for my $key (
+                @{$self->{values_order}{$sec}}
+            ) {
 
-                my $val = $self->{values}{$sec}{$key};
+                #-------------------------------------------
+                # 内部整合性チェック
+                #-------------------------------------------
+                if (
+                    !exists(
+                        $self->{values}{$sec}{$key}
+                    )
+                ) {
+
+                    warn
+                        "[save] key '$key' exists in "
+                        . "values_order but not in values "
+                        . "(section=$sec)\n";
+
+                    next;
+                }
+
+                my $val =
+                    $self->{values}{$sec}{$key};
+
                 print $fh "$key=$val\n";
             }
         }
@@ -410,7 +521,9 @@ sub save {
             for (my $i = 0; $i <= $#$array_ref; $i++) {
 
                 my $val = $array_ref->[$i];
-                next if !defined $val;
+
+                next
+                    if !defined $val;
 
                 print $fh "$i=$val\n";
             }
@@ -423,7 +536,6 @@ sub save {
 
     return 1;
 }
-
 
 
 
