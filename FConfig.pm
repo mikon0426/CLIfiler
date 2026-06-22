@@ -1,4 +1,4 @@
-package Config;
+package FConfig;
 
 use strict;
 use warnings;
@@ -1296,12 +1296,12 @@ sub dump {
         print "[$sec]\n";
 
         if (exists $self->{values}{$sec}) {
-
-            for my $k (keys %{ $self->{values}{$sec} }) {
-
-                my $v = $self->{values}{$sec}{$k};
-                print "  $k = $v\n";
-            }
+             my $v_o = $self->{values_order}{$sec};
+             
+             foreach my $k ( @{$v_o} ) {
+                 my $v = $self->{values}{$sec}{$k};
+                 print " $k = $v\n";
+             }
         }
 
         print "\n";
@@ -1436,3 +1436,4 @@ sub clear_section {
 
 
 
+1;
