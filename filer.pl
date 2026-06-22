@@ -150,6 +150,12 @@ $SIG{TERM} = sub {
 	exit(1);
 };
 
+$SIG{QUIT} = sub {
+	ReadLine::tty_restore();
+	set_visible_cursor(1);
+	exit(1);
+};
+
 # }}}
 
 
