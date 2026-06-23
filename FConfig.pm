@@ -280,14 +280,14 @@ sub get {
 # ■仕様
 #   ・ファイルのセクション順は無視する
 #   ・new() で定義されたセクション順が正
-#   ・存在しないセクションは warning のみで無視
+#   ・存在しないセクションは warning を出力
 #   ・通常値と配列値は分離して格納する
-#
-#   ・配列はそのまま読み込む（整形しない）
-#   ・duplicate違反は warning（読み込みは継続）
 #
 #   ・通常値の重複キーは後勝ち
 #   ・保存順は初回出現位置を維持する
+#
+#   ・duplicate/max 違反は
+#     _validate_config() で検査する
 #
 # ■配列仕様
 #   ・インデックスは読み込み順で連番化する
@@ -297,17 +297,21 @@ sub get {
 #   $file : 設定ファイルパス
 #
 # ■戻り値
-#   成功 : 1
-#   失敗 : undef
+#    1    : 読込成功 + validate成功
+#   -1    : 読込成功だが問題あり
+#   undef : ファイル読込失敗
 #
 #===========================================================
 sub load {
+
     my ($self, $file) = @_;
 
     open my $fh, '<', $file
         or return undef;
 
     my $current_section = undef;
+
+    my $error = 0;
 
     #---------------------------------------------------
     # 配列一時バッファ
@@ -345,6 +349,8 @@ sub load {
                     "[load] unknown section: "
                     . "$current_section\n";
 
+                $error = 1;
+
                 $current_section = undef;
             }
 
@@ -378,31 +384,15 @@ sub load {
             else {
 
                 #---------------------------------------
-                # 初回出現キー
-                #---------------------------------------
-                if (
-                    !exists(
-                        $self->{values}
-                        {$current_section}
-                        {$key}
-                    )
-                ) {
-
-                    push(
-                        @{$self->{values_order}
-                        {$current_section}},
-                        $key
-                    );
-                }
-
-                #---------------------------------------
                 # 通常値設定
                 # （重複キーは後勝ち）
+                # values_order は set() が管理
                 #---------------------------------------
-                $self->{values}
-                    {$current_section}
-                    {$key}
-                    = $value;
+                $self->set(
+                    $current_section,
+                    $key,
+                    $value
+                );
             }
         }
     }
@@ -429,6 +419,18 @@ sub load {
                 [$idx++] = $val;
         }
     }
+
+    #===================================================
+    # 設定内容検査
+    #===================================================
+    my $ret =
+        $self->_validate_config();
+
+    return -1
+        if $error;
+
+    return -1
+        if $ret != 1;
 
     return 1;
 }
@@ -835,160 +837,105 @@ sub get_array_size {
 #===========================================================
 # _validate_config()
 #
-# セクション整合性チェック（内部関数）
+# 設定内容の検査
 #
-# History:
-#   duplicateチェックは dir を使用
+# ■概要
+#   load() 完了後に呼び出される内部検査関数
 #
-# ■引数
-#   $section : セクション名
+#   ・設定ファイル内容を精査する
+#   ・設定値の自動修正は行わない
+#   ・問題があれば warn を出力する
+#
+# ■検査対象
+#   ・duplicate 違反
+#   ・max 違反
 #
 # ■戻り値
-#    0 : 問題なし
-#   -1 : duplicate違反
-#   -2 : max超過
-#   -3 : duplicate違反 + max超過
+#    1 : 問題なし
+#   -1 : 1件以上の問題あり
+#
+# ■注意
+#   ・全セクションを検査する
+#   ・values / values_order は検査対象外
+#   ・配列データのみ検査する
 #
 #===========================================================
 sub _validate_config {
-    my ($self, $section) = @_;
 
-    my $dup_error = 0;
-    my $max_error = 0;
+    my ($self) = @_;
 
-    my $arr_ref =
-        $self->{arrays}{$section};
-
-    my $duplicate = 0;
-    my $max       = undef;
-
-    if(
-        exists(
-            $self->{array_meta}{$section}
-        )
-    ) {
-
-        if(
-            exists(
-                $self->{array_meta}{$section}{duplicate}
-            )
-        ) {
-
-            $duplicate =
-                $self->{array_meta}{$section}{duplicate};
-        }
-
-        if(
-            exists(
-                $self->{array_meta}{$section}{max}
-            )
-        ) {
-
-            $max =
-                $self->{array_meta}{$section}{max};
-        }
-    }
+    my $error = 0;
 
     #---------------------------------------------------
-    # duplicate
+    # 全セクション検査
     #---------------------------------------------------
+    for my $sec (@{$self->{section_order}}) {
 
-    if(
-        !$duplicate
-    ) {
+        my $array_ref =
+            $self->{arrays}{$sec};
 
-        my %seen;
+        my $meta =
+            $self->{array_meta}{$sec};
 
-        if(
-            $section eq 'History'
-        ) {
+        next
+            if ref($array_ref) ne 'ARRAY';
 
-            foreach my $value (@{$arr_ref}) {
+        next
+            if ref($meta) ne 'HASH';
 
-                my ($dir) =
-                    split(
-                        /\|/,
-                        $value,
-                        2
-                    );
+        #===================================================
+        # duplicate チェック
+        #===================================================
+        if (!$meta->{duplicate}) {
 
-                if(
-                    $seen{$dir}++
-                ) {
+            my %seen;
 
-                    $dup_error = 1;
+            foreach my $val (@{$array_ref}) {
 
-                    last;
+                next
+                    if !defined($val);
+
+                if (exists $seen{$val}) {
+
+                    warn
+                        "[validate] duplicate violation "
+                        . "(section=$sec)"
+                        . "($val)\n";
+
+                    $error = 1;
                 }
+
+                $seen{$val} = 1;
             }
         }
-        else {
 
-            foreach my $value (@{$arr_ref}) {
+        #===================================================
+        # max チェック
+        #===================================================
+        if (defined($meta->{max})) {
 
-                if(
-                    $seen{$value}++
-                ) {
+            if (
+                scalar(@{$array_ref})
+                >
+                $meta->{max}
+            ) {
 
-                    $dup_error = 1;
+                warn
+                    "[validate] max violation "
+                    . "(section=$sec)"
+                    . "(count="
+                    . scalar(@{$array_ref})
+                    . ", max="
+                    . $meta->{max}
+                    . ")\n";
 
-                    last;
-                }
+                $error = 1;
             }
         }
     }
 
-    #---------------------------------------------------
-    # max
-    #---------------------------------------------------
-
-    if(
-        defined($max)
-    ) {
-
-        my $size =
-            scalar(
-                @{$arr_ref}
-            );
-
-        if(
-            $size > $max
-        ) {
-
-            $max_error = 1;
-        }
-    }
-
-    #---------------------------------------------------
-    # return
-    #---------------------------------------------------
-
-    if(
-        $dup_error
-        &&
-        $max_error
-    ) {
-
-        return -3;
-    }
-
-    if(
-        $dup_error
-    ) {
-
-        return -1;
-    }
-
-    if(
-        $max_error
-    ) {
-
-        return -2;
-    }
-
-    return 0;
+    return $error ? -1 : 1;
 }
-
 
 
 #===========================================================
@@ -1002,10 +949,7 @@ sub _validate_config {
 #                1=重複許可
 #
 # ■戻り値
-#    0 : 問題なし
-#   -1 : duplicate違反
-#   -2 : max超過
-#   -3 : duplicate違反 + max超過
+#    1 : 問題なし
 #
 #===========================================================
 sub set_array_duplicate {
@@ -1027,25 +971,7 @@ sub set_array_duplicate {
     $self->{array_meta}{$section}{duplicate}
         = $duplicate;
 
-    #---------------------------------------------------
-    # validation
-    #---------------------------------------------------
-    my $ret =
-        $self->_validate_config(
-            $section
-        );
-
-    if(
-        $ret != 0
-    ) {
-
-        warn(
-            "Config: section '$section' "
-            . "validation error ($ret)\n"
-        );
-    }
-
-    return $ret;
+    return 1;
 }
 
 
@@ -1060,10 +986,7 @@ sub set_array_duplicate {
 #   $max     : 最大要素数
 #
 # ■戻り値
-#    0 : 問題なし
-#   -1 : duplicate違反
-#   -2 : max超過
-#   -3 : duplicate違反 + max超過
+#    1 : 問題なし
 #
 #===========================================================
 sub set_array_max {
@@ -1083,25 +1006,7 @@ sub set_array_max {
     $self->{array_meta}{$section}{max}
         = $max;
 
-    #---------------------------------------------------
-    # validation
-    #---------------------------------------------------
-    my $ret =
-        $self->_validate_config(
-            $section
-        );
-
-    if(
-        $ret != 0
-    ) {
-
-        warn(
-            "Config: section '$section' "
-            . "validation error ($ret)\n"
-        );
-    }
-
-    return $ret;
+    return 1;
 }
 
 
