@@ -975,6 +975,201 @@ sub set_array_duplicate {
 }
 
 
+#===========================================================
+# _validate_history()
+#
+# Historyセクション専用検査
+#
+# ■仕様
+#   ・Historyレコード形式を検査する
+#
+#       dir|loc|offset
+#
+#   ・データは変更しない
+#   ・warningのみ出力する
+#
+# ■チェック内容
+#   ・レコード形式
+#   ・dir
+#   ・loc
+#   ・offset
+#   ・duplicate
+#   ・max
+#
+# ■戻り値
+#    1 : 正常
+#   -1 : エラーあり
+#
+#===========================================================
+sub _validate_history {
+
+    my ($self) = @_;
+
+    #---------------------------------------------------
+    # Historyセクションなし
+    #---------------------------------------------------
+    return 1
+        if(
+            !exists(
+                $self->{arrays}{History}
+            )
+        );
+
+    my $array_ref =
+        $self->{arrays}{History};
+
+    return 1
+        if(
+            ref($array_ref) ne 'ARRAY'
+        );
+
+    my $ret = 1;
+
+    my %history;
+
+    #---------------------------------------------------
+    # record check
+    #---------------------------------------------------
+    foreach my $record (@{$array_ref}) {
+
+        #-----------------------------------------------
+        # split
+        #-----------------------------------------------
+        my @cols =
+            split(
+                /\|/,
+                $record
+            );
+
+        #-----------------------------------------------
+        # column count
+        #-----------------------------------------------
+        if(
+            @cols != 3
+        ) {
+
+            warn
+                "[validate_history] "
+                . "invalid format "
+                . "(value=$record)\n";
+
+            $ret = -1;
+
+            next;
+        }
+
+        my (
+            $dir,
+            $loc,
+            $offset
+        ) = @cols;
+
+        #-----------------------------------------------
+        # dir
+        #-----------------------------------------------
+        if(
+            !defined($dir)
+            ||
+            $dir eq ''
+        ) {
+
+            warn
+                "[validate_history] "
+                . "invalid dir "
+                . "(value=$record)\n";
+
+            $ret = -1;
+
+            next;
+        }
+
+        #-----------------------------------------------
+        # loc
+        #-----------------------------------------------
+        if(
+            $loc !~ /^\d+$/
+        ) {
+
+            warn
+                "[validate_history] "
+                . "invalid loc "
+                . "(value=$record)\n";
+
+            $ret = -1;
+        }
+
+        #-----------------------------------------------
+        # offset
+        #-----------------------------------------------
+        if(
+            $offset !~ /^\d+$/
+        ) {
+
+            warn
+                "[validate_history] "
+                . "invalid offset "
+                . "(value=$record)\n";
+
+            $ret = -1;
+        }
+
+        #-----------------------------------------------
+        # duplicate
+        #-----------------------------------------------
+        if(
+            exists(
+                $history{$dir}
+            )
+        ) {
+
+            warn
+                "[validate_history] "
+                . "duplicate "
+                . "(dir=$dir)\n";
+
+            $ret = -1;
+        }
+
+        $history{$dir} = 1;
+    }
+
+    #---------------------------------------------------
+    # max
+    #---------------------------------------------------
+    if(
+        exists(
+            $self->{array_meta}{History}
+        )
+        &&
+        exists(
+            $self->{array_meta}{History}{max}
+        )
+        &&
+        defined(
+            $self->{array_meta}{History}{max}
+        )
+    ) {
+
+        my $max =
+            $self->{array_meta}{History}{max};
+
+        if(
+            @{$array_ref} > $max
+        ) {
+
+            warn
+                "[validate_history] "
+                . "max violation "
+                . "(History)\n";
+
+            $ret = -1;
+        }
+    }
+
+    return $ret;
+}
+
+
 
 #===========================================================
 # set_array_max()
@@ -1008,7 +1203,6 @@ sub set_array_max {
 
     return 1;
 }
-
 
 
 #===========================================================
