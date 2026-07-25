@@ -271,27 +271,25 @@ sub get {
 }
 
 
-
 #===========================================================
 # load()
 #
 # 設定ファイルの読み込み
 #
-# ■仕様
-#   ・ファイルのセクション順は無視する
-#   ・new() で定義されたセクション順が正
-#   ・存在しないセクションは warning を出力
-#   ・通常値と配列値は分離して格納する
+# ■概要
+#   設定ファイルを読み込み、
+#   内部データ展開後にvalidateを実行する
 #
-#   ・通常値の重複キーは後勝ち
-#   ・保存順は初回出現位置を維持する
+# ■処理
+#   ・_load_file()
+#       ファイル読み込み
+#       データ展開
 #
-#   ・duplicate/max 違反は
-#     _validate_config() で検査する
-#
-# ■配列仕様
-#   ・インデックスは読み込み順で連番化する
-#   ・歯抜け配列は禁止（詰め直す）
+#   ・validate
+#       _validate_config()
+#       _validate_history()
+#       _validate_section_letter()
+#       _validate_key_letter()
 #
 # ■引数
 #   $file : 設定ファイルパス
@@ -304,41 +302,204 @@ sub get {
 #===========================================================
 sub load {
 
-    my ($self, $file) = @_;
+    my (
+        $self,
+        $file
+    ) = @_;
 
-    open my $fh, '<', $file
+
+    #===================================================
+    # ファイル読み込み
+    #===================================================
+    my $ret =
+        $self->_load_file(
+            $file
+        );
+
+
+    #---------------------------------------------------
+    # ファイル読込失敗
+    #---------------------------------------------------
+    return undef
+        if !defined($ret);
+
+
+    #---------------------------------------------------
+    # load時エラー
+    #---------------------------------------------------
+    return -1
+        if $ret != 1;
+
+
+    #===================================================
+    # validate
+    #===================================================
+    my $ret1 = $self->_validate_config();
+    my $ret2 = $self->_validate_history();
+    my $ret3 = $self->_validate_section_letter();
+    my $ret4 = $self->_validate_key_letter();
+
+
+    #---------------------------------------------------
+    # validate error
+    #---------------------------------------------------
+    if( $ret1 != 1 || $ret2 != 1 || $ret3 != 1 || $ret4 != 1 ) {
+        return -1;
+    }
+
+
+    #===================================================
+    # success
+    #===================================================
+    return 1;
+}
+
+
+#===========================================================
+# _load_file()
+#
+# 設定ファイル読み込み処理
+#
+# ■概要
+#   load() から呼び出される内部処理
+#
+#   ・設定ファイルを読み込む
+#   ・内部データへ展開する
+#
+# ■仕様
+#   ・section/key名はtrimする
+#   ・valueはtrimしない
+#   ・'='より右側は全てvalueとして扱う
+#
+#   ・section重複はwarning
+#   ・key重複はwarning
+#   ・数字keyは配列として扱う
+#   ・配列番号は無視し登場順で格納する
+#
+#   ・warningにはline番号を付加する
+#
+# ■引数
+#   $file : 設定ファイルパス
+#
+# ■戻り値
+#    1    : 読込成功
+#   -1    : 読込成功だが問題あり
+#   undef : ファイル読込失敗
+#
+#===========================================================
+sub _load_file {
+
+    my (
+        $self,
+        $file
+    ) = @_;
+
+    open(
+        my $fh,
+        '<:encoding(UTF-8)',
+        $file
+    )
         or return undef;
 
-    my $current_section = undef;
+
+    my $current_section =
+        undef;
 
     my $error = 0;
+
+    my $line_no = 0;
+
+
+    #---------------------------------------------------
+    # 重複チェック用
+    #---------------------------------------------------
+    my %loaded_section;
+
+    my %loaded_key;
+
 
     #---------------------------------------------------
     # 配列一時バッファ
     #---------------------------------------------------
     my %array_buffer;
 
-    while (my $line = <$fh>) {
 
-        chomp $line;
+    #===================================================
+    # configファイル読み込み
+    #===================================================
+    while(
+        my $line = <$fh>
+    ) {
 
-        #-----------------------------------------------
-        # コメント / 空行スキップ
-        #-----------------------------------------------
-        next if $line =~ /^\s*$/;
-        next if $line =~ /^\s*#/;
+        ++$line_no;
 
-        #-----------------------------------------------
-        # セクション開始
-        #-----------------------------------------------
-        if ($line =~ /^\[(.+)\]$/) {
+        chomp($line);
+
+
+        #---------------------------------------------------
+        # 空行 / コメント
+        #---------------------------------------------------
+        next
+            if $line =~ /^\s*$/;
+
+        next
+            if $line =~ /^\s*#/;
+
+
+        #---------------------------------------------------
+        # section
+        #---------------------------------------------------
+        if(
+            $line =~ /^\[(.+)\]$/
+        ) {
 
             $current_section = $1;
 
-            #-------------------------------------------
-            # セクション存在チェック
-            #-------------------------------------------
-            if (
+
+            # trim
+            $current_section =~
+                s/^\s+|\s+$//g;
+
+
+            # empty section
+            if(
+                $current_section eq ''
+            ) {
+
+                warn
+                    "[load] invalid empty section "
+                    . "(line=$line_no)\n";
+
+                $error = 1;
+
+                $current_section =
+                    undef;
+
+                next;
+            }
+
+
+            # duplicate section
+            if(
+                exists(
+                    $loaded_section{$current_section}
+                )
+            ) {
+
+                warn
+                    "[load] duplicate section "
+                    . "(section=$current_section)"
+                    . "(line=$line_no)\n";
+
+                $error = 1;
+            }
+
+            $loaded_section{$current_section}
+                = 1;
+
+
+            # unknown section
+            if(
                 !exists(
                     $self->{valid_section}
                     {$current_section}
@@ -346,48 +507,101 @@ sub load {
             ) {
 
                 warn
-                    "[load] unknown section: "
-                    . "$current_section\n";
+                    "[load] unknown section "
+                    . "(section=$current_section)"
+                    . "(line=$line_no)\n";
 
                 $error = 1;
 
-                $current_section = undef;
+                $current_section =
+                    undef;
             }
 
             next;
         }
 
-        #-----------------------------------------------
-        # セクション未定義なら無視
-        #-----------------------------------------------
+
+        #---------------------------------------------------
+        # section未定義
+        #---------------------------------------------------
         next
-            if !defined $current_section;
+            if !defined(
+                $current_section
+            );
 
-        #-----------------------------------------------
+
+        #---------------------------------------------------
         # key=value
-        #-----------------------------------------------
-        if ($line =~ /^([^=]+)=(.*)$/) {
+        #---------------------------------------------------
+        if(
+            $line =~ /^([^=]+)=(.*)$/
+        ) {
 
-            my $key   = $1;
-            my $value = $2;
+            my $key =
+                $1;
 
-            #===========================================
-            # 数値キー → 配列扱い
-            #===========================================
-            if ($key =~ /^\d+$/) {
+            my $value =
+                $2;
+
+
+            # trim key
+            $key =~
+                s/^\s+|\s+$//g;
+
+
+            # empty key
+            if(
+                $key eq ''
+            ) {
+
+                warn
+                    "[load] invalid empty key "
+                    . "(section=$current_section)"
+                    . "(line=$line_no)\n";
+
+                $error = 1;
+
+                next;
+            }
+
+
+            # 数値key → 配列
+            if(
+                $key =~ /^\d+$/
+            ) {
 
                 push(
                     @{$array_buffer{$current_section}},
                     $value
                 );
             }
+
             else {
 
-                #---------------------------------------
-                # 通常値設定
-                # （重複キーは後勝ち）
-                # values_order は set() が管理
-                #---------------------------------------
+                # key duplicate
+                if(
+                    exists(
+                        $loaded_key{$current_section}
+                        {$key}
+                    )
+                ) {
+
+                    warn
+                        "[load] duplicate key "
+                        . "(section=$current_section)"
+                        . "(key=$key)"
+                        . "(line=$line_no)\n";
+
+                    $error = 1;
+                }
+
+
+                $loaded_key{$current_section}
+                    {$key}
+                    = 1;
+
+
+                # 通常値
                 $self->set(
                     $current_section,
                     $key,
@@ -395,24 +609,46 @@ sub load {
                 );
             }
         }
-    }
 
-    close $fh;
+        else {
+
+            warn
+                "[load] invalid format "
+                . "(line=$line_no)"
+                . "(value=$line)\n";
+
+            $error = 1;
+        }
+
+    } # while
+
+
+    #===================================================
+    # close
+    #===================================================
+    close($fh);
+
 
     #===================================================
     # 配列確定処理
+    #
+    # 数値keyは入力順で配列化する
     #===================================================
-    for my $sec (keys %array_buffer) {
+    for my $sec (
+        keys %array_buffer
+    ) {
 
         next
             if !exists(
                 $self->{arrays}{$sec}
             );
 
+
         my $idx = 0;
 
+
         for my $val (
-            @{ $array_buffer{$sec} }
+            @{$array_buffer{$sec}}
         ) {
 
             $self->{arrays}{$sec}
@@ -420,21 +656,16 @@ sub load {
         }
     }
 
-    #===================================================
-    # 設定内容検査
-    #===================================================
-    my $ret =
-        $self->_validate_config();
 
+    #===================================================
+    # 結果
+    #===================================================
     return -1
         if $error;
 
-    return -1
-        if $ret != 1;
 
     return 1;
 }
-
 
 
 #===========================================================
@@ -446,6 +677,7 @@ sub load {
 #   ・セクション順は new() 定義順のみ使用
 #   ・ファイル既存順序は無視する
 #   ・空セクションも必ず出力する
+#   ・設定ファイル文字コードは UTF-8 固定
 #
 #   ・通常値 → 配列 の順で出力
 #   ・通常値は values_order 順で出力
@@ -466,7 +698,8 @@ sub load {
 sub save {
     my ($self, $file) = @_;
 
-    open my $fh, '>', $file
+    open my $fh,
+    '>:encoding(UTF-8)',
         or return undef;
 
     #---------------------------------------------------
@@ -939,43 +1172,6 @@ sub _validate_config {
 
 
 #===========================================================
-# set_array_duplicate()
-#
-# 配列の重複許可設定
-#
-# ■引数
-#   $section   : セクション名
-#   $duplicate : 0=重複禁止
-#                1=重複許可
-#
-# ■戻り値
-#    1 : 問題なし
-#
-#===========================================================
-sub set_array_duplicate {
-    my ($self, $section, $duplicate) = @_;
-
-    #---------------------------------------------------
-    # section check
-    #---------------------------------------------------
-    if(!exists($self->{arrays}{$section})) {
-        warn( "Config: unknown section ". "'$section'\n" );
-        return undef;
-    }
-
-    $duplicate = $duplicate ? 1 : 0;
-
-    #---------------------------------------------------
-    # duplicate設定
-    #---------------------------------------------------
-    $self->{array_meta}{$section}{duplicate}
-        = $duplicate;
-
-    return 1;
-}
-
-
-#===========================================================
 # _validate_history()
 #
 # Historyセクション専用検査
@@ -1018,6 +1214,9 @@ sub _validate_history {
     my $array_ref =
         $self->{arrays}{History};
 
+    my $meta =
+        $self->{array_meta}{History};
+
     return 1
         if(
             ref($array_ref) ne 'ARRAY'
@@ -1049,8 +1248,9 @@ sub _validate_history {
         ) {
 
             warn
-                "[validate_history] "
+                "[validate] "
                 . "invalid format "
+                . "(section=History)"
                 . "(value=$record)\n";
 
             $ret = -1;
@@ -1074,8 +1274,9 @@ sub _validate_history {
         ) {
 
             warn
-                "[validate_history] "
+                "[validate] "
                 . "invalid dir "
+                . "(section=History)"
                 . "(value=$record)\n";
 
             $ret = -1;
@@ -1091,8 +1292,9 @@ sub _validate_history {
         ) {
 
             warn
-                "[validate_history] "
+                "[validate] "
                 . "invalid loc "
+                . "(section=History)"
                 . "(value=$record)\n";
 
             $ret = -1;
@@ -1106,8 +1308,9 @@ sub _validate_history {
         ) {
 
             warn
-                "[validate_history] "
+                "[validate] "
                 . "invalid offset "
+                . "(section=History)"
                 . "(value=$record)\n";
 
             $ret = -1;
@@ -1123,8 +1326,9 @@ sub _validate_history {
         ) {
 
             warn
-                "[validate_history] "
-                . "duplicate "
+                "[validate] "
+                . "duplicate violation "
+                . "(section=History)"
                 . "(dir=$dir)\n";
 
             $ret = -1;
@@ -1137,30 +1341,28 @@ sub _validate_history {
     # max
     #---------------------------------------------------
     if(
-        exists(
-            $self->{array_meta}{History}
-        )
-        &&
-        exists(
-            $self->{array_meta}{History}{max}
-        )
+        ref($meta) eq 'HASH'
         &&
         defined(
-            $self->{array_meta}{History}{max}
+            $meta->{max}
         )
     ) {
 
-        my $max =
-            $self->{array_meta}{History}{max};
-
         if(
-            @{$array_ref} > $max
+            scalar(@{$array_ref})
+            >
+            $meta->{max}
         ) {
 
             warn
-                "[validate_history] "
+                "[validate] "
                 . "max violation "
-                . "(History)\n";
+                . "(section=History)"
+                . "(count="
+                . scalar(@{$array_ref})
+                . ", max="
+                . $meta->{max}
+                . ")\n";
 
             $ret = -1;
         }
@@ -1169,6 +1371,164 @@ sub _validate_history {
     return $ret;
 }
 
+
+#===========================================================
+# _validate_section_letter()
+#
+# セクション名文字検査
+#
+# ■仕様
+#   ・セクション名に使用可能な文字を検査する
+#
+#       ○ 英数字
+#       ○ アンダーバー(_)
+#       ○ スペース
+#
+#   ・データは変更しない
+#   ・warningのみ出力する
+#
+# ■戻り値
+#    1 : 正常
+#   -1 : エラーあり
+#
+#===========================================================
+sub _validate_section_letter {
+
+    my ($self) = @_;
+
+    return 1
+        if(
+            !exists(
+                $self->{section_order}
+            )
+        );
+
+    my $ret = 1;
+
+    foreach my $section (@{$self->{section_order}}) {
+
+        next
+            if(
+                defined($section)
+                &&
+                $section =~ /^[A-Za-z0-9_ ]+$/
+            );
+
+        warn
+            "[validate] "
+            . "invalid section name "
+            . "(section=$section)\n";
+
+        $ret = -1;
+    }
+
+    return $ret;
+}
+
+
+#===========================================================
+# _validate_key_letter()
+#
+# キー名文字検査
+#
+# ■仕様
+#   ・キー名に使用可能な文字を検査する
+#
+#       ○ 英数字
+#       ○ アンダーバー(_)
+#
+#   ・データは変更しない
+#   ・warningのみ出力する
+#
+# ■戻り値
+#    1 : 正常
+#   -1 : エラーあり
+#
+#===========================================================
+sub _validate_key_letter {
+
+    my ($self) = @_;
+
+    my $ret = 1;
+
+    #---------------------------------------------------
+    # 全セクション検査
+    #---------------------------------------------------
+    foreach my $section (@{$self->{section_order}}) {
+
+        next
+            if(
+                !exists(
+                    $self->{values}{$section}
+                )
+            );
+
+        my $hash_ref =
+            $self->{values}{$section};
+
+        next
+            if(
+                ref($hash_ref) ne 'HASH'
+            );
+
+        foreach my $key (keys %{$hash_ref}) {
+
+            next
+                if(
+                    defined($key)
+                    &&
+                    $key =~ /^[A-Za-z0-9_]+$/
+                );
+
+            warn
+                "[validate] "
+                . "invalid key name "
+                . "(section=$section)"
+                . "(key=$key)\n";
+
+            $ret = -1;
+        }
+    }
+
+    return $ret;
+}
+
+
+#===========================================================
+# set_array_duplicate()
+#
+# 配列の重複許可設定
+#
+# ■引数
+#   $section   : セクション名
+#   $duplicate : 0=重複禁止
+#                1=重複許可
+#
+# ■戻り値
+#    1 : 問題なし
+#
+#===========================================================
+sub set_array_duplicate {
+    my ($self, $section, $duplicate) = @_;
+
+    #---------------------------------------------------
+    # section check
+    #---------------------------------------------------
+    if(!exists($self->{arrays}{$section})) {
+        warn( "Config: unknown section ". "'$section'\n" );
+        return undef;
+    }
+
+    $duplicate = $duplicate ? 1 : 0;
+
+    #---------------------------------------------------
+    # duplicate設定
+    #---------------------------------------------------
+    $self->{array_meta}{$section}{duplicate}
+        = $duplicate;
+
+    return 1;
+}
 
 
 #===========================================================
