@@ -174,14 +174,35 @@ sub set {
     #---------------------------------------------------
     # セクションチェック
     #---------------------------------------------------
-    return undef
-        if !exists $self->{valid_section}{$section};
+    if ( !exists $self->{valid_section}{$section} ) {
+        return undef;
+    }
 
     #---------------------------------------------------
-    # キーチェック（数値禁止）
+    # keyチェック
     #---------------------------------------------------
-    if (defined $key && $key =~ /^\d+$/) {
-        warn "[set] numeric key is not allowed (use array API)\n";
+    if ( !defined($key) ) {
+        return undef;
+    }
+
+    #---------------------------------------------------
+    # keyチェック（空文字禁止）
+    #---------------------------------------------------
+    if ( $key eq '' ) {
+        return undef;
+    }
+
+    #---------------------------------------------------
+    # keyチェック（数値のみ禁止）
+    #---------------------------------------------------
+    if ( $key =~ /^\d+$/ ) {
+        return undef;
+    }
+
+    #---------------------------------------------------
+    # valueチェック
+    #---------------------------------------------------
+    if ( !defined($value) ) {
         return undef;
     }
 
@@ -699,7 +720,7 @@ sub save {
     my ($self, $file) = @_;
 
     open my $fh,
-    '>:encoding(UTF-8)',
+    '>:encoding(UTF-8)', $file
         or return undef;
 
     #---------------------------------------------------
@@ -814,6 +835,12 @@ sub push_value {
         if !exists $self->{valid_section}{$section};
 
     #---------------------------------------------------
+    # valueチェック
+    #---------------------------------------------------
+    return undef
+        if !defined($value);
+
+    #---------------------------------------------------
     # 配列取得
     #---------------------------------------------------
     my $array_ref = $self->{arrays}{$section};
@@ -833,7 +860,7 @@ sub push_value {
 
         for my $v (@$array_ref) {
 
-            if (defined $v && defined $value && $v eq $value) {
+            if (defined $v && $v eq $value) {
 
                 warn "[push_value] duplicate rejected: $value\n";
                 return undef;
@@ -1803,6 +1830,52 @@ sub dump {
         print "\n";
     }
 
+
+    #---------------------------------------------------
+    # arrays
+    #---------------------------------------------------
+    print "====================\n";
+    print "arrays\n";
+    print "====================\n";
+
+    for my $sec (@{$self->{section_order}}) {
+
+        print "[$sec]\n";
+
+        if (exists $self->{arrays}{$sec}) {
+
+            my $arr = $self->{arrays}{$sec};
+
+            for (my $i = 0; $i <= $#$arr; $i++) {
+
+                my $v = $arr->[$i];
+
+                if ($sec eq 'History') {
+
+                    my ( $dir, $loc, $offset ) = split( /\|/, $v, 3 );
+
+                    $dir    //= '';
+                    $loc    //= '';
+                    $offset //= '';
+
+                    print
+                        "  $i = "
+                        . "{dir:$dir, "
+                        . "loc:$loc, "
+                        . "offset:$offset}\n";
+                }
+                else {
+
+                    print
+                        "  $i = $v\n";
+                }
+            }
+        }
+
+        print "\n";
+    }
+
+
     #---------------------------------------------------
     # array_meta
     #---------------------------------------------------
@@ -1879,6 +1952,11 @@ sub clear_section {
     # values 初期化
     #---------------------------------------------------
     $self->{values}{$section} = {};
+    
+    #---------------------------------------------------
+    # values_order 初期化
+    #---------------------------------------------------
+    $self->{values_order}{$section} = [];
 
     #---------------------------------------------------
     # arrays 初期化
